@@ -3,7 +3,7 @@ terraform {
 
   backend "s3" {
     bucket       = "chandu-platform-tf-backend-267753040218"
-    key          = "bootstrap/terraform.tfstate"
+    key          = "dev/terraform.tfstate"
     region       = "ap-south-1"
     use_lockfile = true
     encrypt      = true
