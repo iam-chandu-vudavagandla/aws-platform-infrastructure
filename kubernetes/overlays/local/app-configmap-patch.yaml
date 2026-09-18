@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-platform-app-config
+data:
+  APP_ENV: local-minikube
+  APP_VERSION: 1.2.0-local
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: appdb
+  DB_SSLMODE: disable
+  DB_CONNECT_TIMEOUT: "5"

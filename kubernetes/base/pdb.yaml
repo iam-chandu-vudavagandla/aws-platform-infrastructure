@@ -1,0 +1,9 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aws-platform-app-pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: aws-platform-app
