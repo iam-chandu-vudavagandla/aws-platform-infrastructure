@@ -16,3 +16,12 @@ private_subnet_cidrs = [
   "10.0.11.0/24",
   "10.0.12.0/24"
 ]
+
+eks_cluster_name    = "aws-platform-dev-eks"
+eks_cluster_version = "1.35"
+
+
+rds_database_name   = "appdb"
+rds_master_username = "appadmin"
+rds_engine_version  = "18.3"
+rds_instance_class  = "db.t3.micro"

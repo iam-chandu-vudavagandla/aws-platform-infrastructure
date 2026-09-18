@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-platform-app
+spec:
+  replicas: 2
+
+  template:
+    metadata:
+      labels:
+        version: 1.2.0-local
+
+    spec:
+      containers:
+        - name: aws-platform-app
+          envFrom:
+            - configMapRef:
+                name: aws-platform-app-config
+
+            - secretRef:
+                name: local-database-credentials

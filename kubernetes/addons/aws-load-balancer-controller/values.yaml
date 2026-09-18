@@ -1,0 +1,13 @@
+clusterName: aws-platform-dev-eks
+
+region: ap-south-1
+
+vpcId: vpc-06837d27e42519408
+
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+   eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/REPLACE_WITH_LOAD_BALANCER_CONTROLLER_ROLE

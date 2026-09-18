@@ -87,16 +87,6 @@ resource "aws_security_group" "rds" {
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "rds_from_eks" {
-  security_group_id = aws_security_group.rds.id
-
-  referenced_security_group_id = aws_security_group.eks.id
-  from_port                    = var.database_port
-  ip_protocol                  = "tcp"
-  to_port                      = var.database_port
-
-  description = "Allow database traffic from EKS"
-}
 
 resource "aws_vpc_security_group_egress_rule" "rds_all" {
   security_group_id = aws_security_group.rds.id

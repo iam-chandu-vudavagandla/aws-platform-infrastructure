@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dev
+
+resources:
+  - ../../base
+  - namespace.yaml
+  - ingress.yaml
+  - app-hpa.yaml
+
+patches:
+  - path: app-configmap-patch.yaml
+  - path: app-deployment-patch.yaml
+  - path: app-serviceaccount-patch.yaml
+
+images:
+  - name: aws-platform-app
+    newName: 000000000000.dkr.ecr.ap-south-1.amazonaws.com/aws-platform-dev-app
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

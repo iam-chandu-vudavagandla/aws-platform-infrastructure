@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: local
+
+resources:
+  - ../../base
+  - namespace.yaml
+  - postgres-pvc.yaml
+  - postgres-service.yaml
+  - postgres-deployment.yaml
+
+patches:
+  - path: app-configmap-patch.yaml
+  - path: app-deployment-patch.yaml
+  - path: app-serviceaccount-patch.yaml
+
+secretGenerator:
+  - name: local-database-credentials
+    envs:
+      - database.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+images:
+  - name: aws-platform-app
+    newName: aws-platform-app
+    newTag: 1.2.0-local

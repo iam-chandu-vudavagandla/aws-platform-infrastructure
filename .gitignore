@@ -36,3 +36,10 @@ tfplan
 .terraform/
 terraform.tfstate
 terraform.tfstate.*
+application/local.env
+kubernetes/overlays/local/database.env
+tfplan*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
