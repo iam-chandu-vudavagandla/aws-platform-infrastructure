@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    name: Terraform validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.4
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive .
+
+      - name: Initialize bootstrap configuration
+        run: terraform -chdir=bootstrap/backend init -backend=false -input=false
+
+      - name: Validate bootstrap configuration
+        run: terraform -chdir=bootstrap/backend validate -no-color
+
+      - name: Initialize development configuration
+        run: terraform -chdir=environments/dev init -backend=false -input=false
+
+      - name: Validate development configuration
+        run: terraform -chdir=environments/dev validate -no-color
+
+  kubernetes:
+    name: Kubernetes rendering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.6
+
+      - name: Render base
+        run: kubectl kustomize kubernetes/base >/dev/null
+
+      - name: Render development overlay
+        run: kubectl kustomize kubernetes/overlays/dev >/dev/null
+
+      - name: Render local overlay
+        run: kubectl kustomize kubernetes/overlays/local >/dev/null
+
+  python:
+    name: Python validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            application/requirements.txt
+            platform-agent/pyproject.toml
+
+      - name: Validate application syntax
+        run: python -m py_compile application/app.py
+
+      - name: Install reliability-agent dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable './platform-agent[dev]'
+
+      - name: Run reliability-agent tests
+        working-directory: platform-agent
+        run: python -m pytest
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build application image
+        uses: docker/build-push-action@v7
+        with:
+          context: application
+          push: false
+          tags: aws-platform-app:ci
+
+  secrets:
+    name: Basic credential scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Search for obvious committed credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if git grep -n -I -E \
+            'AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+            echo "ERROR: Possible credential material found"
+            exit 1
+          fi
+
+          echo "No obvious credential material found"
