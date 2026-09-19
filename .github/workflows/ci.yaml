@@ -78,9 +78,14 @@ jobs:
       - name: Render development overlay
         run: kubectl kustomize kubernetes/overlays/dev >/dev/null
 
+      - name: Create local validation credentials
+        run: |
+          cp \
+            kubernetes/overlays/local/database.env.example \
+            kubernetes/overlays/local/database.env
+
       - name: Render local overlay
         run: kubectl kustomize kubernetes/overlays/local >/dev/null
-
   python:
     name: Python validation
     runs-on: ubuntu-latest
