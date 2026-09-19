@@ -3,6 +3,12 @@ variable "aws_region" {
   type        = string
 }
 
+variable "skip_aws_credential_validation" {
+  description = "Skip AWS credential and account validation for offline CI checks"
+  type        = bool
+  default     = false
+}
+
 variable "project_name" {
   description = "Project Name"
   type        = string
