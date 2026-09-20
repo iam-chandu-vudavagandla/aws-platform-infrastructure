@@ -50,7 +50,7 @@ jobs:
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
           directory: .
-          framework: terraform,kubernetes,github_actions
+          framework: all
           quiet: true
           soft_fail: true
 
