@@ -46,13 +46,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Scan Terraform, Kubernetes, and workflows
-        uses: bridgecrewio/checkov-action@v12.1347.0
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
-          directory: .
-          framework: all
-          quiet: true
-          soft_fail: true
+          python-version: "3.12"
+
+      - name: Install Checkov
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-cache-dir \
+            checkov==3.3.19
+
+      - name: Scan infrastructure and workflow configuration
+        run: |
+          checkov \
+            --directory . \
+            --framework all \
+            --quiet \
+            --soft-fail
 
   filesystem:
     name: Trivy repository scan
