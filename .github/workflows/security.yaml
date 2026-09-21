@@ -114,5 +114,7 @@ jobs:
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          # Ignore pip's bundled third-party SBOM, not installed packages.
+          skip-files: usr/local/lib/python3.13/site-packages/pip/_vendor/bom.cdx.json
           format: table
           exit-code: "0"
