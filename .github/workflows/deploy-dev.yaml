@@ -1,0 +1,207 @@
+name: Deploy development
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: Confirm deployment to the AWS development environment
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: inputs.confirm_deployment == 'true'
+    name: Build and deploy application
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      APPLICATION_ROLE_ARN: ${{ vars.APPLICATION_ROLE_ARN }}
+      DB_SECRET_ARN: ${{ vars.DB_SECRET_ARN }}
+      DB_HOST: ${{ vars.DB_HOST }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          required_variables=(
+            AWS_REGION
+            AWS_DEPLOY_ROLE_ARN
+            EKS_CLUSTER_NAME
+            ECR_REPOSITORY
+            APPLICATION_ROLE_ARN
+            DB_SECRET_ARN
+            DB_HOST
+          )
+
+          for variable_name in "${required_variables[@]}"; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::GitHub environment variable ${variable_name} is required"
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-deploy-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push immutable application image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: application
+          push: true
+          tags: >-
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.6
+
+      - name: Configure EKS access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION}" \
+            --alias aws-platform-dev-deployer
+
+      - name: Render deployment manifests
+        shell: bash
+        env:
+          ECR_REPOSITORY_URI: >-
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+
+          ./scripts/render-dev.sh \
+            /tmp/aws-platform-dev.yaml
+
+      - name: Remove cluster-scoped namespace manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("/tmp/aws-platform-dev.yaml")
+          destination = Path("/tmp/aws-platform-dev-namespaced.yaml")
+
+          documents = re.split(
+              r"\n---\n",
+              source.read_text(encoding="utf-8"),
+          )
+
+          namespaced_documents = []
+          removed_namespaces = 0
+
+          for document in documents:
+              if re.search(r"(?m)^kind:\s*Namespace\s*$", document):
+                  removed_namespaces += 1
+                  continue
+
+              if document.strip():
+                  namespaced_documents.append(document.strip())
+
+          if removed_namespaces != 1:
+              raise SystemExit(
+                  f"Expected exactly one Namespace manifest, found "
+                  f"{removed_namespaces}"
+              )
+
+          destination.write_text(
+              "\n---\n".join(namespaced_documents) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Deploy namespaced resources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          kubectl apply \
+            --filename /tmp/aws-platform-dev-namespaced.yaml
+
+          kubectl rollout status \
+            deployment/aws-platform-app \
+            --namespace dev \
+            --timeout=300s
+
+      - name: Verify deployed image digest
+        shell: bash
+        env:
+          ECR_REPOSITORY_URI: >-
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+
+          expected_image="${ECR_REPOSITORY_URI}@${IMAGE_DIGEST}"
+
+          actual_image="$(
+            kubectl get deployment aws-platform-app \
+              --namespace dev \
+              --output jsonpath='{.spec.template.spec.containers[?(@.name=="aws-platform-app")].image}'
+          )"
+
+          if [[ "${actual_image}" != "${expected_image}" ]]; then
+            echo "::error::Expected ${expected_image}, deployed ${actual_image}"
+            exit 1
+          fi
+
+          echo "Verified deployed image: ${actual_image}"
+
+      - name: Record deployment summary
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          {
+            echo "## Development deployment"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image digest: \`${IMAGE_DIGEST}\`"
+            echo "- Cluster: \`${EKS_CLUSTER_NAME}\`"
+            echo "- Namespace: \`dev\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
