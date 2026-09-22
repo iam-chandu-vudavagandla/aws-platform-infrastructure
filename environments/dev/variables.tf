@@ -46,6 +46,25 @@ variable "eks_cluster_version" {
   type        = string
 }
 
+variable "eks_public_access_cidrs" {
+  description = "CIDR blocks permitted to access the public EKS API endpoint"
+  type        = list(string)
+
+  validation {
+    condition = (
+      length(var.eks_public_access_cidrs) > 0 &&
+      alltrue([
+        for cidr in var.eks_public_access_cidrs :
+        can(cidrhost(cidr, 0)) &&
+        cidr != "0.0.0.0/0" &&
+        cidr != "::/0"
+      ])
+    )
+
+    error_message = "Provide at least one valid restricted CIDR; unrestricted 0.0.0.0/0 and ::/0 access is forbidden."
+  }
+}
+
 variable "rds_database_name" {
   description = "Initial PostgreSQL database name"
   type        = string
