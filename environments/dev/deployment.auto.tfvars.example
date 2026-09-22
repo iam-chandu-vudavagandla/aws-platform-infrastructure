@@ -1,0 +1,9 @@
+# Copy this file to deployment.auto.tfvars before a live deployment.
+# The copied file is ignored by Git.
+
+eks_public_access_cidrs = [
+  "203.0.113.10/32"
+]
+
+github_repository  = "iam-chandu-vudavagandla/aws-platform-infrastructure"
+github_environment = "dev"
