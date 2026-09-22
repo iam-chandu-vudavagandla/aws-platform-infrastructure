@@ -267,21 +267,19 @@ The development environment supports offline CI validation through a dedicated b
 
 ## AWS Deployment Notes
 
-The repository is account-neutral. AWS account IDs, IAM role ARNs, ECR URLs, RDS endpoints, secret ARNs, and backend bucket names are represented by placeholders.
+The repository is account-neutral. AWS account IDs, role ARNs, ECR URLs, database endpoints, secret ARNs, backend bucket names, and restricted EKS endpoint CIDRs are supplied during deployment.
 
-Before deploying to another AWS account:
+The complete provisioning, GitHub environment configuration, deployment, verification, rollback, and teardown procedure is documented in the [Development Deployment Runbook](docs/development-deployment-runbook.md).
 
-1. Configure an AWS CLI profile with appropriate permissions.
-2. Choose a globally unique Terraform backend bucket name.
-3. Bootstrap the Terraform backend.
-4. Configure the development backend.
-5. Replace environment-specific Kubernetes placeholders using Terraform outputs.
-6. Review the Terraform plan carefully.
-7. Apply infrastructure only after confirming cost and security impact.
-8. Build and push the application image to ECR.
-9. Deploy the development Kustomize overlay.
+Application deployments use:
 
-> AWS resources such as NAT Gateway, EKS, ALB, and RDS can generate charges. Review AWS pricing before deployment.
+- GitHub Actions OIDC instead of long-lived AWS credentials
+- A protected GitHub environment named `dev`
+- Immutable Amazon ECR image digests
+- Namespace-scoped Amazon EKS deployment permissions
+- Explicit manual deployment confirmation
+
+> AWS resources such as NAT Gateway, EKS, ALB, and RDS can generate charges. Review the Terraform plan and expected AWS cost before deployment.
 
 ## Security Decisions
 

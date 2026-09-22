@@ -1,3 +1,8 @@
+output "aws_region" {
+  description = "AWS Region containing the development environment"
+  value       = var.aws_region
+}
+
 output "vpc_id" {
   description = "ID of the dev VPC"
   value       = module.vpc.vpc_id
