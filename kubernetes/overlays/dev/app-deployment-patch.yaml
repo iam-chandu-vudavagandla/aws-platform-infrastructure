@@ -9,3 +9,22 @@ spec:
         version: 1.1.1
       annotations:
         database-secret-generation: "1"
+
+    spec:
+      topologySpreadConstraints:
+        - $patch: replace
+
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: aws-platform-app
+
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          minDomains: 2
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: aws-platform-app
