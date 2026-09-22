@@ -177,3 +177,18 @@ output "application_database_secret_name" {
   description = "Name of the dedicated application database secret"
   value       = aws_secretsmanager_secret.application_database.name
 }
+
+output "github_actions_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions IAM OIDC provider"
+  value       = aws_iam_openid_connect_provider.github_actions.arn
+}
+
+output "github_actions_deployer_role_arn" {
+  description = "IAM role ARN assumed by the protected GitHub deployment environment"
+  value       = aws_iam_role.github_actions_deployer.arn
+}
+
+output "github_actions_deployment_policy_arn" {
+  description = "IAM policy ARN granting deployment access to ECR and EKS"
+  value       = aws_iam_policy.github_actions_deployment.arn
+}
