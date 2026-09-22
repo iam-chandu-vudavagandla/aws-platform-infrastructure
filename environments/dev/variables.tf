@@ -84,3 +84,30 @@ variable "rds_instance_class" {
   description = "RDS DB instance class"
   type        = string
 }
+
+variable "github_repository" {
+  description = "GitHub repository allowed to assume the deployment role, in owner/repository format"
+  type        = string
+
+  validation {
+    condition = can(
+      regex(
+        "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+        var.github_repository
+      )
+    )
+
+    error_message = "github_repository must use the owner/repository format."
+  }
+}
+
+variable "github_environment" {
+  description = "Protected GitHub environment allowed to assume the deployment role"
+  type        = string
+  default     = "dev"
+
+  validation {
+    condition     = length(trimspace(var.github_environment)) > 0
+    error_message = "github_environment must not be empty."
+  }
+}
