@@ -41,7 +41,6 @@ resource "aws_vpc_security_group_egress_rule" "alb_all" {
   description = "Allow ALB outbound traffic"
 }
 
-
 resource "aws_security_group" "eks" {
   name        = "${var.project_name}-${var.environment}-eks-sg"
   description = "Security group for EKS workloads"
@@ -74,7 +73,6 @@ resource "aws_vpc_security_group_egress_rule" "eks_all" {
   description = "Allow EKS outbound traffic"
 }
 
-
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-${var.environment}-rds-sg"
   description = "Security group for RDS database"
@@ -85,14 +83,4 @@ resource "aws_security_group" "rds" {
     Environment = var.environment
     Project     = var.project_name
   }
-}
-
-
-resource "aws_vpc_security_group_egress_rule" "rds_all" {
-  security_group_id = aws_security_group.rds.id
-
-  cidr_ipv4   = "0.0.0.0/0"
-  ip_protocol = "-1"
-
-  description = "Allow RDS outbound traffic"
 }

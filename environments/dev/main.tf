@@ -43,6 +43,7 @@ module "eks" {
   node_role_arn    = module.iam.eks_node_role_arn
 
   eks_security_group_id = module.security_groups.eks_security_group_id
+  public_access_cidrs   = var.eks_public_access_cidrs
 
   node_instance_types = ["t3.small"]
 
