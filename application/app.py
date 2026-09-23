@@ -7,8 +7,23 @@ from threading import Lock
 import boto3
 import psycopg
 from flask import Flask, jsonify, render_template_string
+from observability import (
+    configure_logging,
+    metrics_response,
+    record_database_check,
+    request_finished,
+    request_started,
+)
 
 app = Flask(__name__)
+
+configure_logging(app)
+app.before_request(request_started)
+
+
+@app.after_request
+def observe_request(response):
+    return request_finished(app, response)
 
 APP_NAME = os.getenv("APP_NAME", "AWS Platform Application")
 APP_ENV = os.getenv("APP_ENV", "local")
@@ -185,6 +200,9 @@ def health():
 def ready():
     return jsonify(status="ready"), 200
 
+@app.get("/metrics")
+def metrics():
+    return metrics_response()
 
 @app.get("/api/info")
 def info():
@@ -200,12 +218,16 @@ def info():
 def database_health():
     try:
         result = check_database()
+        record_database_check("success")
         return jsonify(result), 200
-
     except Exception as error:
+        record_database_check("failure")
         app.logger.error(
-            "Database health check failed: %s",
-            type(error).__name__,
+            "Database health check failed",
+            extra={
+                "error_type": type(error).__name__,
+            },
+            exc_info=True,
         )
 
         return jsonify(

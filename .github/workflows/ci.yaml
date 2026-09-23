@@ -107,12 +107,24 @@ jobs:
             platform-agent/pyproject.toml
 
       - name: Validate application syntax
-        run: python -m py_compile application/app.py
+        run: |
+          python -m py_compile \
+            application/app.py \
+            application/observability.py \
+            application/gunicorn.conf.py \
+            application/tests/test_app.py
 
-      - name: Install reliability-agent dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install \
+            --requirement application/requirements.txt \
+            pytest
           python -m pip install --editable './platform-agent[dev]'
+
+      - name: Run application tests
+        working-directory: application
+        run: python -m pytest tests --verbose
 
       - name: Run reliability-agent tests
         working-directory: platform-agent
