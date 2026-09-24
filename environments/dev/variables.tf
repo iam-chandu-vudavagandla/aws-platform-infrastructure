@@ -111,3 +111,18 @@ variable "github_environment" {
     error_message = "github_environment must not be empty."
   }
 }
+
+variable "rds_backup_retention_period" {
+  description = "Number of days to retain automated RDS backups"
+  type        = number
+  default     = 7
+
+  validation {
+    condition = (
+      var.rds_backup_retention_period >= 0 &&
+      var.rds_backup_retention_period <= 35
+    )
+
+    error_message = "rds_backup_retention_period must be between 0 and 35."
+  }
+}

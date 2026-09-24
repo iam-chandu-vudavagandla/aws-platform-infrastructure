@@ -87,7 +87,7 @@ module "rds" {
   ]
 
   multi_az                 = false
-  backup_retention_period  = 7
+  backup_retention_period  = var.rds_backup_retention_period
   deletion_protection      = false
   skip_final_snapshot      = true
   delete_automated_backups = true
