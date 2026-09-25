@@ -197,3 +197,33 @@ output "github_actions_deployment_policy_arn" {
   description = "IAM policy ARN granting deployment access to ECR and EKS"
   value       = aws_iam_policy.github_actions_deployment.arn
 }
+
+output "codebuild_github_connection_arn" {
+  description = "ARN of the GitHub App connection used by the CodeBuild runner"
+  value       = aws_codeconnections_connection.github_actions_runner.arn
+}
+
+output "codebuild_github_runner_security_group_id" {
+  description = "Security group ID used by the CodeBuild-hosted GitHub Actions runner"
+  value       = aws_security_group.codebuild_github_runner.id
+}
+
+output "codebuild_github_runner_role_arn" {
+  description = "IAM role ARN used by the CodeBuild-hosted GitHub Actions runner"
+  value       = aws_iam_role.codebuild_github_runner.arn
+}
+
+output "codebuild_github_runner_log_group_name" {
+  description = "CloudWatch log group for the CodeBuild-hosted GitHub Actions runner"
+  value       = aws_cloudwatch_log_group.codebuild_github_runner.name
+}
+
+output "codebuild_github_runner_project_name" {
+  description = "Name of the CodeBuild-hosted GitHub Actions runner project"
+  value       = aws_codebuild_project.github_actions_runner.name
+}
+
+output "codebuild_github_runner_project_arn" {
+  description = "ARN of the CodeBuild-hosted GitHub Actions runner project"
+  value       = aws_codebuild_project.github_actions_runner.arn
+}
