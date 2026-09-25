@@ -24,7 +24,7 @@ jobs:
   deploy:
     if: inputs.confirm_deployment == 'true'
     name: Build and deploy application
-    runs-on: ubuntu-latest
+    runs-on: codebuild-aws-platform-dev-github-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 30
     environment: dev
 
