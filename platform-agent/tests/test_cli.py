@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
-
 from platform_agent import cli
+from platform_agent.contracts import Confidence, IncidentReport
 from platform_agent.tools import terraform as terraform_tools
 
 
@@ -84,6 +84,60 @@ def test_cli_rejects_invalid_tool_limit() -> None:
                 "modules/vpc",
                 "--max-tool-calls",
                 "0",
+            ]
+        )
+
+    assert error.value.code == 2
+
+
+def test_investigate_kubernetes_returns_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = IncidentReport(
+        summary="Deployment aws-platform-app is healthy.",
+        probable_cause="No health problems were detected.",
+        evidence=[],
+        confidence=Confidence.HIGH,
+        recommended_action="Continue monitoring.",
+        approval_required=False,
+        tool_trace=[],
+        errors=[],
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "run_kubernetes_investigation",
+        lambda **kwargs: report,
+    )
+
+    exit_code = cli.main(
+        [
+            "investigate-kubernetes",
+            "aws-platform-app",
+            "--namespace",
+            "dev",
+            "--event-limit",
+            "10",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["confidence"] == "high"
+    assert payload["approval_required"] is False
+    assert "is healthy" in payload["summary"]
+
+
+def test_cli_rejects_invalid_event_limit() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "investigate-kubernetes",
+                "aws-platform-app",
+                "--event-limit",
+                "101",
             ]
         )
 

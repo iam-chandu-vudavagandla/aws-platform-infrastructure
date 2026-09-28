@@ -5,6 +5,9 @@ from platform_agent.agent import (
     DEFAULT_MAX_TOOL_CALLS,
     run_terraform_module_investigation,
 )
+from platform_agent.kubernetes_investigation import (
+    run_kubernetes_investigation,
+)
 
 
 def positive_integer(value: str) -> int:
@@ -12,14 +15,20 @@ def positive_integer(value: str) -> int:
     try:
         parsed_value = int(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError(
-            "must be an integer"
-        ) from error
+        raise argparse.ArgumentTypeError("must be an integer") from error
 
     if parsed_value < 1:
-        raise argparse.ArgumentTypeError(
-            "must be at least 1"
-        )
+        raise argparse.ArgumentTypeError("must be at least 1")
+
+    return parsed_value
+
+
+def event_limit(value: str) -> int:
+    """Validate the Kubernetes event limit."""
+    parsed_value = positive_integer(value)
+
+    if parsed_value > 100:
+        raise argparse.ArgumentTypeError("must not exceed 100")
 
     return parsed_value
 
@@ -29,8 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="platform-agent",
         description=(
-            "Read-only reliability investigation agent for "
-            "AWS platform infrastructure."
+            "Read-only reliability investigation agent for AWS platform infrastructure."
         ),
     )
 
@@ -59,6 +67,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    kubernetes_parser = subparsers.add_parser(
+        "investigate-kubernetes",
+        help=("Investigate a Kubernetes deployment using read-only evidence."),
+    )
+
+    kubernetes_parser.add_argument(
+        "deployment",
+        help="Name of the Kubernetes deployment.",
+    )
+
+    kubernetes_parser.add_argument(
+        "--namespace",
+        default="dev",
+        help="Kubernetes namespace (default: dev).",
+    )
+
+    kubernetes_parser.add_argument(
+        "--event-limit",
+        type=event_limit,
+        default=20,
+        help="Maximum recent events to inspect (default: 20).",
+    )
+
     return parser
 
 
@@ -74,9 +105,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         print(report.model_dump_json(indent=2))
+        return 2 if report.errors else 0
 
-        # Exit 0 when the investigation completed successfully.
-        # Exit 2 when safety checks or investigation errors occurred.
+    if arguments.command == "investigate-kubernetes":
+        report = run_kubernetes_investigation(
+            name=arguments.deployment,
+            namespace=arguments.namespace,
+            event_limit=arguments.event_limit,
+        )
+
+        print(report.model_dump_json(indent=2))
         return 2 if report.errors else 0
 
     parser.error("Unsupported command.")
