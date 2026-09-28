@@ -2,7 +2,10 @@ from collections.abc import Callable
 from typing import Any
 
 from platform_agent.contracts import ToolResult
-from platform_agent.tools.kubernetes import get_pods
+from platform_agent.tools.kubernetes import (
+    get_deployment,
+    get_pods,
+)
 from platform_agent.tools.terraform import (
     check_module_files,
     list_terraform_files,
@@ -15,6 +18,7 @@ TOOLS: dict[str, ToolFunction] = {
     "list_terraform_files": list_terraform_files,
     "check_module_files": check_module_files,
     "get_pods": get_pods,
+    "get_deployment": get_deployment,
 }
 
 

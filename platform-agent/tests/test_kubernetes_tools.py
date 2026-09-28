@@ -107,3 +107,74 @@ def test_kubectl_timeout_is_reported(
         match="timed out",
     ):
         kubernetes.get_pods("dev")
+
+
+def test_get_deployment_returns_health_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "metadata": {
+            "name": "aws-platform-app",
+            "generation": 4,
+        },
+        "spec": {
+            "replicas": 2,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "aws-platform-app",
+                            "image": "example/app@sha256:test",
+                        }
+                    ]
+                }
+            },
+        },
+        "status": {
+            "observedGeneration": 4,
+            "replicas": 2,
+            "updatedReplicas": 2,
+            "readyReplicas": 2,
+            "availableReplicas": 2,
+            "conditions": [
+                {
+                    "type": "Available",
+                    "status": "True",
+                    "reason": "MinimumReplicasAvailable",
+                    "message": "Deployment has minimum availability.",
+                    "lastTransitionTime": "2026-09-25T17:45:00Z",
+                }
+            ],
+        },
+    }
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: payload,
+    )
+
+    result = kubernetes.get_deployment(
+        "aws-platform-app",
+        "dev",
+    )
+
+    assert result["name"] == "aws-platform-app"
+    assert result["desired_replicas"] == 2
+    assert result["updated_replicas"] == 2
+    assert result["ready_replicas"] == 2
+    assert result["available_replicas"] == 2
+    assert result["unavailable_replicas"] == 0
+    assert result["containers"][0]["name"] == ("aws-platform-app")
+    assert result["conditions"][0]["status"] == "True"
+
+
+def test_get_deployment_rejects_unsafe_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="valid Kubernetes DNS label",
+    ):
+        kubernetes.get_deployment(
+            "--all-namespaces",
+            "dev",
+        )

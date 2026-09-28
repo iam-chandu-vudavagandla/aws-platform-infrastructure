@@ -120,3 +120,73 @@ def get_pods(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
         "count": len(pods),
         "pods": pods,
     }
+
+
+def get_deployment(
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return a safe summary of one Kubernetes deployment."""
+
+    name = validate_dns_label(name, "name")
+    namespace = validate_dns_label(namespace, "namespace")
+
+    payload = run_kubectl(
+        [
+            "get",
+            "deployment",
+            name,
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    metadata = payload.get("metadata", {})
+    spec = payload.get("spec", {})
+    status = payload.get("status", {})
+
+    containers = [
+        {
+            "name": container.get("name", "unknown"),
+            "image": container.get("image", "unknown"),
+        }
+        for container in (
+            spec.get("template", {}).get("spec", {}).get("containers", [])
+        )
+    ]
+
+    conditions = [
+        {
+            "type": condition.get("type"),
+            "status": condition.get("status"),
+            "reason": condition.get("reason"),
+            "message": condition.get("message"),
+            "last_transition_time": condition.get("lastTransitionTime"),
+        }
+        for condition in status.get("conditions", [])
+    ]
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "name": metadata.get("name", name),
+        "generation": metadata.get("generation"),
+        "observed_generation": status.get("observedGeneration"),
+        "desired_replicas": spec.get("replicas", 0),
+        "current_replicas": status.get("replicas", 0),
+        "updated_replicas": status.get(
+            "updatedReplicas",
+            0,
+        ),
+        "ready_replicas": status.get("readyReplicas", 0),
+        "available_replicas": status.get(
+            "availableReplicas",
+            0,
+        ),
+        "unavailable_replicas": status.get(
+            "unavailableReplicas",
+            0,
+        ),
+        "containers": containers,
+        "conditions": conditions,
+    }
