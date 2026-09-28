@@ -4,6 +4,7 @@ from typing import Any
 from platform_agent.contracts import ToolResult
 from platform_agent.tools.kubernetes import (
     get_deployment,
+    get_events,
     get_pods,
 )
 from platform_agent.tools.terraform import (
@@ -19,6 +20,7 @@ TOOLS: dict[str, ToolFunction] = {
     "check_module_files": check_module_files,
     "get_pods": get_pods,
     "get_deployment": get_deployment,
+    "get_events": get_events,
 }
 
 

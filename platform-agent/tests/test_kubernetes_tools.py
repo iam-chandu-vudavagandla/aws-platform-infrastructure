@@ -178,3 +178,82 @@ def test_get_deployment_rejects_unsafe_name() -> None:
             "--all-namespaces",
             "dev",
         )
+
+
+def test_get_events_returns_newest_events_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "creationTimestamp": "2026-09-25T10:00:00Z",
+                },
+                "type": "Normal",
+                "reason": "Scheduled",
+                "message": "Pod scheduled successfully.",
+                "count": 1,
+                "lastTimestamp": "2026-09-25T10:01:00Z",
+                "involvedObject": {
+                    "kind": "Pod",
+                    "name": "older-pod",
+                },
+            },
+            {
+                "metadata": {
+                    "creationTimestamp": "2026-09-25T11:00:00Z",
+                },
+                "type": "Warning",
+                "reason": "Unhealthy",
+                "message": "Startup probe failed.",
+                "count": 2,
+                "lastTimestamp": "2026-09-25T11:02:00Z",
+                "involvedObject": {
+                    "kind": "Pod",
+                    "name": "newer-pod",
+                },
+            },
+        ]
+    }
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: payload,
+    )
+
+    result = kubernetes.get_events(
+        namespace="dev",
+        limit=1,
+    )
+
+    assert result["total_events"] == 2
+    assert result["returned_events"] == 1
+    assert result["events"][0]["reason"] == "Unhealthy"
+    assert result["events"][0]["object_name"] == "newer-pod"
+    assert result["events"][0]["count"] == 2
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_get_events_rejects_limit_outside_range(
+    limit: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="between 1 and 100",
+    ):
+        kubernetes.get_events(
+            namespace="dev",
+            limit=limit,
+        )
+
+
+def test_get_events_rejects_non_integer_limit() -> None:
+    with pytest.raises(
+        TypeError,
+        match="must be an integer",
+    ):
+        kubernetes.get_events(
+            namespace="dev",
+            limit=True,
+        )

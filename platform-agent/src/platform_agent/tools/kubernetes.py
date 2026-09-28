@@ -190,3 +190,76 @@ def get_deployment(
         "containers": containers,
         "conditions": conditions,
     }
+
+
+def get_events(
+    namespace: str = DEFAULT_NAMESPACE,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Return the most recent Kubernetes events in a namespace."""
+
+    namespace = validate_dns_label(namespace, "namespace")
+
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise TypeError("limit must be an integer.")
+
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100.")
+
+    payload = run_kubectl(
+        [
+            "get",
+            "events",
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    def last_event_time(event: dict[str, Any]) -> str:
+        metadata = event.get("metadata", {})
+        series = event.get("series") or {}
+
+        return (
+            event.get("eventTime")
+            or series.get("lastObservedTime")
+            or event.get("lastTimestamp")
+            or metadata.get("creationTimestamp")
+            or ""
+        )
+
+    sorted_events = sorted(
+        payload.get("items", []),
+        key=last_event_time,
+        reverse=True,
+    )
+
+    events = []
+
+    for event in sorted_events[:limit]:
+        metadata = event.get("metadata", {})
+        involved_object = event.get("involvedObject", {})
+        series = event.get("series") or {}
+
+        events.append(
+            {
+                "type": event.get("type", "Unknown"),
+                "reason": event.get("reason", "Unknown"),
+                "message": event.get("message", ""),
+                "count": (series.get("count") or event.get("count") or 1),
+                "object_kind": involved_object.get("kind"),
+                "object_name": involved_object.get("name"),
+                "first_timestamp": (
+                    event.get("firstTimestamp") or metadata.get("creationTimestamp")
+                ),
+                "last_timestamp": last_event_time(event),
+            }
+        )
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "total_events": len(payload.get("items", [])),
+        "returned_events": len(events),
+        "limit": limit,
+        "events": events,
+    }
