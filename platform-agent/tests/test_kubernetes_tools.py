@@ -119,6 +119,11 @@ def test_get_deployment_returns_health_summary(
         },
         "spec": {
             "replicas": 2,
+            "selector": {
+                "matchLabels": {
+                    "app": "aws-platform-app",
+                }
+            },
             "template": {
                 "spec": {
                     "containers": [
@@ -167,6 +172,7 @@ def test_get_deployment_returns_health_summary(
     assert result["unavailable_replicas"] == 0
     assert result["containers"][0]["name"] == ("aws-platform-app")
     assert result["conditions"][0]["status"] == "True"
+    assert result["selector"] == "app=aws-platform-app"
 
 
 def test_get_deployment_rejects_unsafe_name() -> None:
@@ -256,4 +262,59 @@ def test_get_events_rejects_non_integer_limit() -> None:
         kubernetes.get_events(
             namespace="dev",
             limit=True,
+        )
+
+
+def test_get_pods_uses_validated_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_arguments: list[str] = []
+
+    def fake_run_kubectl(
+        arguments: list[str],
+    ) -> dict:
+        captured_arguments.extend(arguments)
+        return {"items": []}
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        fake_run_kubectl,
+    )
+
+    result = kubernetes.get_pods(
+        namespace="dev",
+        selector="app=aws-platform-app",
+    )
+
+    assert captured_arguments == [
+        "get",
+        "pods",
+        "--namespace",
+        "dev",
+        "--selector",
+        "app=aws-platform-app",
+    ]
+    assert result["selector"] == "app=aws-platform-app"
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "",
+        "--all-namespaces",
+        "app in (one,two)",
+        "app=valid;delete=pods",
+    ],
+)
+def test_get_pods_rejects_unsafe_selector(
+    selector: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="selector",
+    ):
+        kubernetes.get_pods(
+            namespace="dev",
+            selector=selector,
         )

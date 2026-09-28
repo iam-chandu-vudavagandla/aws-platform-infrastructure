@@ -11,6 +11,12 @@ DEFAULT_NAMESPACE = "dev"
 COMMAND_TIMEOUT_SECONDS = 20
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+LABEL_SELECTOR_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9./_-]*="
+    r"[A-Za-z0-9][A-Za-z0-9._-]*"
+    r"(?:,[A-Za-z0-9][A-Za-z0-9./_-]*="
+    r"[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+)
 
 
 def validate_dns_label(value: str, field_name: str) -> str:
@@ -26,6 +32,24 @@ def validate_dns_label(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} must be a valid Kubernetes DNS label.")
 
     return value
+
+
+def validate_label_selector(selector: str) -> str:
+    """Validate a restricted equality-based label selector."""
+
+    if not isinstance(selector, str):
+        raise TypeError("selector must be a string.")
+
+    if not selector:
+        raise ValueError("selector must not be empty.")
+
+    if len(selector) > 253:
+        raise ValueError("selector must not exceed 253 characters.")
+
+    if LABEL_SELECTOR_PATTERN.fullmatch(selector) is None:
+        raise ValueError("selector must contain comma-separated key=value labels.")
+
+    return selector
 
 
 def run_kubectl(arguments: list[str]) -> dict[str, Any]:
@@ -75,20 +99,31 @@ def run_kubectl(arguments: list[str]) -> dict[str, Any]:
     return payload
 
 
-def get_pods(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
+def get_pods(
+    namespace: str = DEFAULT_NAMESPACE,
+    selector: str | None = None,
+) -> dict[str, Any]:
     """Return a safe summary of pods in one namespace."""
 
     namespace = validate_dns_label(namespace, "namespace")
 
-    payload = run_kubectl(
-        [
-            "get",
-            "pods",
-            "--namespace",
-            namespace,
-        ]
-    )
+    arguments = [
+        "get",
+        "pods",
+        "--namespace",
+        namespace,
+    ]
 
+    if selector is not None:
+        selector = validate_label_selector(selector)
+        arguments.extend(
+            [
+                "--selector",
+                selector,
+            ]
+        )
+
+    payload = run_kubectl(arguments)
     pods = []
 
     for item in payload.get("items", []):
@@ -117,6 +152,7 @@ def get_pods(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
     return {
         "context": KUBERNETES_CONTEXT,
         "namespace": namespace,
+        "selector": selector,
         "count": len(pods),
         "pods": pods,
     }
@@ -144,6 +180,16 @@ def get_deployment(
     metadata = payload.get("metadata", {})
     spec = payload.get("spec", {})
     status = payload.get("status", {})
+    match_labels = spec.get("selector", {}).get(
+        "matchLabels",
+        {},
+    )
+
+    selector = ",".join(
+        f"{key}={value}"
+        for key, value in sorted(match_labels.items())
+        if isinstance(key, str) and isinstance(value, str)
+    )
 
     containers = [
         {
@@ -170,6 +216,7 @@ def get_deployment(
         "context": KUBERNETES_CONTEXT,
         "namespace": namespace,
         "name": metadata.get("name", name),
+        "selector": selector,
         "generation": metadata.get("generation"),
         "observed_generation": status.get("observedGeneration"),
         "desired_replicas": spec.get("replicas", 0),

@@ -23,6 +23,7 @@ def healthy_trace() -> list[ToolResult]:
         tool_result(
             "get_deployment",
             {
+                "selector": "app=aws-platform-app",
                 "generation": 2,
                 "observed_generation": 2,
                 "desired_replicas": 2,
@@ -94,6 +95,7 @@ def test_warning_event_is_reported(
             "type": "Warning",
             "reason": "Unhealthy",
             "message": "Readiness probe failed.",
+            "object_name": "app-123",
         }
     ]
 
@@ -102,7 +104,6 @@ def test_warning_event_is_reported(
         namespace="dev",
         trace=healthy_trace,
     )
-
     assert report.approval_required is True
     assert "Readiness probe failed" in report.probable_cause
 
@@ -175,3 +176,29 @@ def test_investigation_calls_tools_in_safe_order(
     ]
     assert calls[2][1]["limit"] == 10
     assert report.approval_required is False
+    assert calls[1][1] == {
+        "namespace": "dev",
+        "selector": "app=aws-platform-app",
+    }
+
+
+def test_unrelated_warning_event_is_ignored(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": "An unrelated workload failed.",
+            "object_name": "different-application",
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    assert report.approval_required is False
+    assert "is healthy" in report.summary

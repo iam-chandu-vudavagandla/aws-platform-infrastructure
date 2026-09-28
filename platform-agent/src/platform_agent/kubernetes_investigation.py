@@ -1,5 +1,3 @@
-from typing import Any
-
 from platform_agent.agent import evidence_from_trace
 from platform_agent.contracts import Confidence, IncidentReport, ToolResult
 from platform_agent.tool_registry import execute_tool
@@ -101,10 +99,19 @@ def create_kubernetes_report(
                 f"Pod {pod_name} reports {pod['restarts']} container restarts."
             )
 
-    warning_events = [
-        event for event in events.get("events", []) if event.get("type") == "Warning"
-    ]
+    relevant_object_names = {
+        name,
+        *(pod.get("name") for pod in pod_items if isinstance(pod.get("name"), str)),
+    }
 
+    warning_events = [
+        event
+        for event in events.get("events", [])
+        if (
+            event.get("type") == "Warning"
+            and event.get("object_name") in relevant_object_names
+        )
+    ]
     for event in warning_events:
         findings.append(
             "Warning event "
@@ -153,37 +160,50 @@ def run_kubernetes_investigation(
 ) -> IncidentReport:
     """Run a bounded, read-only Kubernetes investigation."""
 
-    tool_plan: tuple[tuple[str, dict[str, Any]], ...] = (
-        (
-            "get_deployment",
-            {
-                "name": name,
-                "namespace": namespace,
-            },
-        ),
-        (
-            "get_pods",
-            {
-                "namespace": namespace,
-            },
-        ),
-        (
-            "get_events",
-            {
-                "namespace": namespace,
-                "limit": event_limit,
-            },
-        ),
-    )
-
     trace: list[ToolResult] = []
 
-    for tool_name, arguments in tool_plan:
-        result = execute_tool(tool_name, arguments)
-        trace.append(result)
+    deployment_result = execute_tool(
+        "get_deployment",
+        {
+            "name": name,
+            "namespace": namespace,
+        },
+    )
+    trace.append(deployment_result)
 
-        if not result.success:
-            break
+    if not deployment_result.success:
+        return create_kubernetes_report(
+            name=name,
+            namespace=namespace,
+            trace=trace,
+        )
+
+    selector = deployment_result.data.get("selector", "")
+
+    pods_result = execute_tool(
+        "get_pods",
+        {
+            "namespace": namespace,
+            "selector": selector,
+        },
+    )
+    trace.append(pods_result)
+
+    if not pods_result.success:
+        return create_kubernetes_report(
+            name=name,
+            namespace=namespace,
+            trace=trace,
+        )
+
+    events_result = execute_tool(
+        "get_events",
+        {
+            "namespace": namespace,
+            "limit": event_limit,
+        },
+    )
+    trace.append(events_result)
 
     return create_kubernetes_report(
         name=name,
