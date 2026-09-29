@@ -2,49 +2,71 @@
 
 ## Purpose
 
-Investigate failures in the aws-platform-infrastructure project and
-produce an evidence-based diagnosis without changing infrastructure.
+Investigate Terraform structure and Kubernetes workload health in the
+aws-platform-infrastructure project and produce evidence-based reports
+without modifying infrastructure or application state.
 
 ## Supported environment
 
 - Repository: aws-platform-infrastructure
-- AWS profile: new-free-account
+- AWS profile: aws-platform-new
 - AWS region: ap-south-1
 - EKS cluster: aws-platform-dev-eks
-- Kubernetes namespace: dev
+- Kubernetes context: aws-platform-dev-new
+- Default Kubernetes namespace: dev
 
-## Version 1 capabilities
+## Implemented capabilities
 
-The agent may:
+The current agent can:
 
-- Inspect Terraform files
-- Run Terraform formatting and validation checks
-- Summarize Terraform plans
-- Read Kubernetes resource status
-- Read Kubernetes events
-- Read application and controller logs
-- Read Kubernetes metrics
-- Inspect EKS, ECR, ALB and RDS metadata
-- Produce an incident report
+- List Terraform files inside the approved repository
+- Check Terraform modules for expected standard files
+- Read one Kubernetes Deployment
+- Discover the Deployment label selector
+- Read only the pods selected by that Deployment
+- Read recent Kubernetes namespace events
+- Ignore warning events unrelated to the investigated Deployment or pods
+- Correlate Deployment, pod and event evidence
+- Produce a strict Pydantic incident report
+- Preserve the complete tool-call trace
+- Stop after a tool failure
+- Reject tools that are not explicitly allowlisted
+
+The current workflows are deterministic. They do not depend on an LLM
+to select tools, classify workload health or generate the final report.
+
+## Allowed tools
+
+The allowlisted tools are:
+
+- `list_terraform_files`
+- `check_module_files`
+- `get_deployment`
+- `get_pods`
+- `get_events`
+
+All Kubernetes operations are read-only and use predefined `kubectl`
+argument structures without shell execution.
 
 ## Forbidden actions
 
 The agent must not:
 
-- Run terraform apply
-- Run terraform destroy
-- Run kubectl apply
-- Run kubectl delete
-- Restart or scale workloads
-- Roll back deployments
+- Run `terraform apply`
+- Run `terraform destroy`
+- Run `kubectl apply`
+- Run `kubectl delete`
+- Restart, scale or roll back workloads
 - Create, update or delete AWS resources
-- Read secret values
+- Read Kubernetes Secret values
+- Read AWS secret values
 - Access files outside the approved repository
 - Execute arbitrary shell commands
+- Execute a tool that is not allowlisted
 
 ## Required output
 
-Every investigation must return:
+Every completed investigation must return:
 
 - Summary
 - Probable cause
@@ -55,21 +77,46 @@ Every investigation must return:
 - Complete tool-call trace
 - Errors or missing evidence
 
+## Kubernetes evidence rules
+
+A Kubernetes Deployment investigation must:
+
+1. Read the Deployment before reading its pods.
+2. Extract the Deployment `matchLabels` selector.
+3. Pass the validated selector to the pod-inspection tool.
+4. Evaluate only pods returned by that selector.
+5. Consider warning events only when they refer to the Deployment or
+   one of its selected pods.
+6. Return low confidence if required evidence cannot be collected.
+
 ## Stop conditions
 
 The agent must stop when:
 
-- It has sufficient evidence to produce a diagnosis
+- It has sufficient evidence to produce a report
 - The maximum tool-call limit is reached
-- A required tool repeatedly fails
+- A required tool fails
+- Input validation fails
+- The requested operation is not allowlisted
 - The requested operation violates a safety rule
-- Human approval is required
 
 ## Human approval
 
-Any operation that could modify infrastructure, application state,
-permissions, networking, databases or deployments requires explicit
-human approval.
+Any proposed operation that could modify infrastructure, application
+state, permissions, networking, databases or deployments requires
+explicit human approval.
 
-Version 1 does not execute modifying operations even after approval.
-It may only recommend a change or generate a proposed patch.
+Version 1 never executes modifying operations, including after approval.
+It can only diagnose conditions and recommend a human-reviewed action.
+
+## Planned capabilities
+
+The following capabilities are not implemented yet:
+
+- Kubernetes log inspection
+- Kubernetes resource-metric inspection
+- AWS EKS, ECR, ALB and RDS metadata inspection
+- Terraform formatting and validation tools
+- Terraform plan summarization
+- Evaluation fixtures for repeatable failure scenarios
+- Optional LLM-assisted explanation constrained by collected evidence
