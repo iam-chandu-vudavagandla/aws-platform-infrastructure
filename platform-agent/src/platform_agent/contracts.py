@@ -37,14 +37,10 @@ class ToolResult(StrictModel):
     @model_validator(mode="after")
     def validate_error_state(self) -> "ToolResult":
         if self.success and self.error is not None:
-            raise ValueError(
-                "A successful tool result cannot contain an error."
-            )
+            raise ValueError("A successful tool result cannot contain an error.")
 
         if not self.success and not self.error:
-            raise ValueError(
-                "A failed tool result must include an error."
-            )
+            raise ValueError("A failed tool result must include an error.")
 
         return self
 

@@ -1,12 +1,11 @@
 import pytest
-from pydantic import ValidationError
-
 from platform_agent.contracts import (
     Confidence,
     Evidence,
     IncidentReport,
     ToolResult,
 )
+from pydantic import ValidationError
 
 
 def test_successful_tool_result() -> None:

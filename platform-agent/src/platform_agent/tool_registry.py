@@ -2,11 +2,15 @@ from collections.abc import Callable
 from typing import Any
 
 from platform_agent.contracts import ToolResult
+from platform_agent.tools.kubernetes import (
+    get_deployment,
+    get_events,
+    get_pods,
+)
 from platform_agent.tools.terraform import (
     check_module_files,
     list_terraform_files,
 )
-
 
 ToolFunction = Callable[..., dict[str, Any]]
 
@@ -14,6 +18,9 @@ ToolFunction = Callable[..., dict[str, Any]]
 TOOLS: dict[str, ToolFunction] = {
     "list_terraform_files": list_terraform_files,
     "check_module_files": check_module_files,
+    "get_pods": get_pods,
+    "get_deployment": get_deployment,
+    "get_events": get_events,
 }
 
 
@@ -23,11 +30,7 @@ def execute_tool(
 ) -> ToolResult:
     """Validate and execute an allowlisted tool."""
 
-    received_arguments = (
-        arguments
-        if isinstance(arguments, dict)
-        else {}
-    )
+    received_arguments = arguments if isinstance(arguments, dict) else {}
 
     if name not in TOOLS:
         return ToolResult(
@@ -66,7 +69,7 @@ def execute_tool(
             error=str(error),
         )
 
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ToolResult(
             tool=name,
             arguments=arguments,

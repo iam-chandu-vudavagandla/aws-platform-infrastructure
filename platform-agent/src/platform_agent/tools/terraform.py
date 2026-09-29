@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Any
 
-
 # terraform.py is located at:
 # platform-agent/src/platform_agent/tools/terraform.py
 #
@@ -14,7 +13,7 @@ def safe_project_path(relative_path: str) -> Path:
     """Resolve a path while preventing access outside the project."""
 
     if not isinstance(relative_path, str):
-        raise ValueError("Path must be a string.")
+        raise TypeError("Path must be a string.")
 
     if not relative_path.strip():
         raise ValueError("Path cannot be empty.")
@@ -29,9 +28,7 @@ def safe_project_path(relative_path: str) -> Path:
     try:
         target.relative_to(PROJECT_ROOT)
     except ValueError as error:
-        raise ValueError(
-            "Path is outside the approved project."
-        ) from error
+        raise ValueError("Path is outside the approved project.") from error
 
     return target
 
@@ -77,17 +74,9 @@ def check_module_files(module: str) -> dict[str, Any]:
         "outputs.tf",
     )
 
-    present = [
-        filename
-        for filename in expected
-        if (target / filename).is_file()
-    ]
+    present = [filename for filename in expected if (target / filename).is_file()]
 
-    missing = [
-        filename
-        for filename in expected
-        if filename not in present
-    ]
+    missing = [filename for filename in expected if filename not in present]
 
     return {
         "module": module,

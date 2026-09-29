@@ -237,10 +237,19 @@ python -m pip install --editable '.[dev]'
 python -m pytest
 ```
 
-Run the current CLI investigation:
+Run the current Terraform module investigation:
 
 ```bash
 platform-agent inspect-module modules/vpc
+```
+
+Run the read-only Kubernetes investigation:
+
+```bash
+export AWS_PROFILE=aws-platform-new
+export AWS_REGION=ap-south-1
+
+platform-agent investigate-kubernetes aws-platform-app --namespace dev --event-limit 20
 ```
 
 The resulting JSON report contains the investigation summary, evidence, confidence level, recommended action, errors, and tool-call trace.
@@ -313,6 +322,6 @@ The project has been validated through:
 * Add Terraform security scanning
 * Add Kubernetes policy validation
 * Add observability with metrics, logs, and dashboards
-* Expand the reliability agent with Kubernetes and AWS read-only tools
+* Expand the reliability agent with logs, metrics and AWS metadata
 * Add evaluation fixtures for repeatable agent testing
 * Add automated release versioning

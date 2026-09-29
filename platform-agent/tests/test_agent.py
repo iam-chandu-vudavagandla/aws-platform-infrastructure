@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from platform_agent.agent import (
     run_terraform_module_investigation,
 )
@@ -39,23 +38,15 @@ def fake_complete_module(
 def test_complete_module_produces_high_confidence_report(
     fake_complete_module: Path,
 ) -> None:
-    report = run_terraform_module_investigation(
-        "modules/vpc"
-    )
+    report = run_terraform_module_investigation("modules/vpc")
 
     assert report.confidence == Confidence.HIGH
     assert report.approval_required is False
     assert report.errors == []
     assert len(report.tool_trace) == 2
-    assert report.tool_trace[0].tool == (
-        "list_terraform_files"
-    )
-    assert report.tool_trace[0].arguments == {
-        "path": "modules/vpc"
-    }
-    assert report.tool_trace[1].tool == (
-        "check_module_files"
-    )
+    assert report.tool_trace[0].tool == ("list_terraform_files")
+    assert report.tool_trace[0].arguments == {"path": "modules/vpc"}
+    assert report.tool_trace[1].tool == ("check_module_files")
 
 
 def test_missing_file_requires_human_approved_change(
@@ -63,9 +54,7 @@ def test_missing_file_requires_human_approved_change(
 ) -> None:
     (fake_complete_module / "outputs.tf").unlink()
 
-    report = run_terraform_module_investigation(
-        "modules/vpc"
-    )
+    report = run_terraform_module_investigation("modules/vpc")
 
     assert report.confidence == Confidence.HIGH
     assert report.approval_required is True
@@ -75,16 +64,12 @@ def test_missing_file_requires_human_approved_change(
 def test_unsafe_path_stops_after_failed_tool(
     fake_complete_module: Path,
 ) -> None:
-    report = run_terraform_module_investigation(
-        "../../etc"
-    )
+    report = run_terraform_module_investigation("../../etc")
 
     assert report.confidence == Confidence.LOW
     assert len(report.tool_trace) == 1
     assert report.tool_trace[0].success is False
-    assert report.errors == [
-        "Path is outside the approved project."
-    ]
+    assert report.errors == ["Path is outside the approved project."]
 
 
 def test_maximum_tool_call_limit_stops_loop(
@@ -98,6 +83,5 @@ def test_maximum_tool_call_limit_stops_loop(
     assert report.confidence == Confidence.LOW
     assert len(report.tool_trace) == 1
     assert report.errors == [
-        "Maximum tool-call limit reached before "
-        "the investigation completed."
+        ("Maximum tool-call limit reached before the investigation completed.")
     ]
