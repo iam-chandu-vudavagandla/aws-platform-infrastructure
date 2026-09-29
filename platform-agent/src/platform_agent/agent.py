@@ -9,7 +9,6 @@ from platform_agent.contracts import (
 )
 from platform_agent.tool_registry import execute_tool
 
-
 DEFAULT_MAX_TOOL_CALLS = 4
 
 
@@ -22,10 +21,7 @@ def decide_next_action(
     if trace and not trace[-1].success:
         return None
 
-    completed_tools = {
-        result.tool
-        for result in trace
-    }
+    completed_tools = {result.tool for result in trace}
 
     if "list_terraform_files" not in completed_tools:
         return (
@@ -67,20 +63,13 @@ def create_report(
 ) -> IncidentReport:
     """Create the final report from collected evidence."""
 
-    errors = [
-        result.error
-        for result in trace
-        if result.error is not None
-    ]
+    errors = [result.error for result in trace if result.error is not None]
 
     evidence = evidence_from_trace(trace)
 
     if errors:
         return IncidentReport(
-            summary=(
-                f"Investigation of {module} stopped because "
-                "a tool failed."
-            ),
+            summary=(f"Investigation of {module} stopped because a tool failed."),
             probable_cause=(
                 "The agent could not determine whether the "
                 "Terraform module is complete."
@@ -97,11 +86,7 @@ def create_report(
         )
 
     module_check = next(
-        (
-            result
-            for result in trace
-            if result.tool == "check_module_files"
-        ),
+        (result for result in trace if result.tool == "check_module_files"),
         None,
     )
 
@@ -110,26 +95,17 @@ def create_report(
 
         if limit_reached:
             report_errors.append(
-                "Maximum tool-call limit reached before "
-                "the investigation completed."
+                "Maximum tool-call limit reached before the investigation completed."
             )
         else:
-            report_errors.append(
-                "The module inspection did not complete."
-            )
+            report_errors.append("The module inspection did not complete.")
 
         return IncidentReport(
-            summary=(
-                f"Investigation of {module} is incomplete."
-            ),
-            probable_cause=(
-                "Insufficient evidence was collected."
-            ),
+            summary=(f"Investigation of {module} is incomplete."),
+            probable_cause=("Insufficient evidence was collected."),
             evidence=evidence,
             confidence=Confidence.LOW,
-            recommended_action=(
-                "Review the tool-call limit and retry."
-            ),
+            recommended_action=("Review the tool-call limit and retry."),
             approval_required=False,
             tool_trace=trace,
             errors=report_errors,
@@ -141,18 +117,15 @@ def create_report(
     if complete:
         return IncidentReport(
             summary=(
-                f"Terraform module {module} contains all "
-                "expected standard files."
+                f"Terraform module {module} contains all expected standard files."
             ),
             probable_cause=(
-                "No missing standard Terraform module files "
-                "were detected."
+                "No missing standard Terraform module files were detected."
             ),
             evidence=evidence,
             confidence=Confidence.HIGH,
             recommended_action=(
-                "Continue with Terraform formatting and "
-                "validation checks."
+                "Continue with Terraform formatting and validation checks."
             ),
             approval_required=False,
             tool_trace=trace,
@@ -162,19 +135,11 @@ def create_report(
     missing_text = ", ".join(missing)
 
     return IncidentReport(
-        summary=(
-            f"Terraform module {module} is missing one or "
-            "more expected files."
-        ),
-        probable_cause=(
-            f"Missing standard module files: {missing_text}."
-        ),
+        summary=(f"Terraform module {module} is missing one or more expected files."),
+        probable_cause=(f"Missing standard module files: {missing_text}."),
         evidence=evidence,
         confidence=Confidence.HIGH,
-        recommended_action=(
-            f"Review and create the required files: "
-            f"{missing_text}."
-        ),
+        recommended_action=(f"Review and create the required files: {missing_text}."),
         approval_required=True,
         tool_trace=trace,
         errors=[],
@@ -188,9 +153,7 @@ def run_terraform_module_investigation(
     """Run a bounded Terraform module investigation."""
 
     if max_tool_calls < 1:
-        raise ValueError(
-            "max_tool_calls must be at least 1."
-        )
+        raise ValueError("max_tool_calls must be at least 1.")
 
     trace: list[ToolResult] = []
 
@@ -219,10 +182,7 @@ def run_terraform_module_investigation(
         trace=trace,
     )
 
-    limit_reached = (
-        len(trace) >= max_tool_calls
-        and pending_action is not None
-    )
+    limit_reached = len(trace) >= max_tool_calls and pending_action is not None
 
     return create_report(
         module=module,

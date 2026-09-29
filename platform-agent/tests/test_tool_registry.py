@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from platform_agent import tool_registry
 from platform_agent.tools import terraform as terraform_tools
 
