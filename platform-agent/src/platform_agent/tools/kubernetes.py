@@ -310,3 +310,108 @@ def get_events(
         "limit": limit,
         "events": events,
     }
+
+
+def run_kubectl_text(arguments: list[str]) -> str:
+    """Execute a predefined read-only kubectl command returning text."""
+
+    command = [
+        "kubectl",
+        "--context",
+        KUBERNETES_CONTEXT,
+        *arguments,
+        "--request-timeout=15s",
+    ]
+
+    environment = os.environ.copy()
+    environment["AWS_PROFILE"] = AWS_PROFILE
+    environment["AWS_REGION"] = AWS_REGION
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("kubectl is not installed or not in PATH.") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("kubectl command timed out.") from error
+
+    if completed.returncode != 0:
+        error_message = (
+            completed.stderr.strip() or "kubectl returned a non-zero exit code."
+        )
+        raise ValueError(error_message)
+
+    return completed.stdout
+
+
+def get_pod_logs(
+    pod: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    container: str | None = None,
+    tail_lines: int = 100,
+    since_seconds: int = 600,
+) -> dict[str, Any]:
+    """Return bounded recent logs from one Kubernetes pod."""
+
+    pod = validate_dns_label(pod, "pod")
+    namespace = validate_dns_label(namespace, "namespace")
+
+    if container is not None:
+        container = validate_dns_label(container, "container")
+
+    if isinstance(tail_lines, bool) or not isinstance(tail_lines, int):
+        raise TypeError("tail_lines must be an integer.")
+
+    if tail_lines < 1 or tail_lines > 500:
+        raise ValueError("tail_lines must be between 1 and 500.")
+
+    if isinstance(since_seconds, bool) or not isinstance(since_seconds, int):
+        raise TypeError("since_seconds must be an integer.")
+
+    if since_seconds < 1 or since_seconds > 86400:
+        raise ValueError("since_seconds must be between 1 and 86400.")
+
+    arguments = [
+        "logs",
+        pod,
+        "--namespace",
+        namespace,
+        f"--tail={tail_lines}",
+        f"--since={since_seconds}s",
+        "--timestamps=true",
+    ]
+
+    if container is not None:
+        arguments.extend(
+            [
+                "--container",
+                container,
+            ]
+        )
+
+    output = run_kubectl_text(arguments)
+    maximum_characters = 50000
+    truncated = len(output) > maximum_characters
+
+    if truncated:
+        output = output[-maximum_characters:]
+
+    lines = output.splitlines()
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "pod": pod,
+        "container": container,
+        "tail_lines": tail_lines,
+        "since_seconds": since_seconds,
+        "line_count": len(lines),
+        "truncated": truncated,
+        "logs": lines,
+    }

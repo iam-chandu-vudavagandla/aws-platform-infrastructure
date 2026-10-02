@@ -5,6 +5,7 @@ from platform_agent.contracts import ToolResult
 from platform_agent.tools.kubernetes import (
     get_deployment,
     get_events,
+    get_pod_logs,
     get_pods,
 )
 from platform_agent.tools.terraform import (
@@ -21,6 +22,7 @@ TOOLS: dict[str, ToolFunction] = {
     "get_pods": get_pods,
     "get_deployment": get_deployment,
     "get_events": get_events,
+    "get_pod_logs": get_pod_logs,
 }
 
 

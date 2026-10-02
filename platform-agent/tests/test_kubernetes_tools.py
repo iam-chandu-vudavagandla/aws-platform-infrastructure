@@ -318,3 +318,89 @@ def test_get_pods_rejects_unsafe_selector(
             namespace="dev",
             selector=selector,
         )
+
+
+def test_get_pod_logs_returns_bounded_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_arguments: list[str] = []
+
+    def fake_run_kubectl_text(arguments: list[str]) -> str:
+        captured_arguments.extend(arguments)
+        return (
+            "2026-09-30T01:00:00Z application started\n"
+            "2026-09-30T01:00:01Z health check passed\n"
+        )
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl_text",
+        fake_run_kubectl_text,
+    )
+
+    result = kubernetes.get_pod_logs(
+        pod="aws-platform-app-abc123",
+        namespace="dev",
+        container="aws-platform-app",
+        tail_lines=50,
+        since_seconds=300,
+    )
+
+    assert captured_arguments == [
+        "logs",
+        "aws-platform-app-abc123",
+        "--namespace",
+        "dev",
+        "--tail=50",
+        "--since=300s",
+        "--timestamps=true",
+        "--container",
+        "aws-platform-app",
+    ]
+    assert result["pod"] == "aws-platform-app-abc123"
+    assert result["container"] == "aws-platform-app"
+    assert result["line_count"] == 2
+    assert result["truncated"] is False
+    assert result["logs"] == [
+        "2026-09-30T01:00:00Z application started",
+        "2026-09-30T01:00:01Z health check passed",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("tail_lines", 0, "tail_lines must be between"),
+        ("tail_lines", 501, "tail_lines must be between"),
+        ("tail_lines", True, "tail_lines must be an integer"),
+        ("since_seconds", 0, "since_seconds must be between"),
+        ("since_seconds", 86401, "since_seconds must be between"),
+        ("since_seconds", True, "since_seconds must be an integer"),
+    ],
+)
+def test_get_pod_logs_rejects_invalid_bounds(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    arguments = {
+        "pod": "aws-platform-app-abc123",
+        field: value,
+    }
+
+    with pytest.raises(
+        (TypeError, ValueError),
+        match=message,
+    ):
+        kubernetes.get_pod_logs(**arguments)
+
+
+def test_get_pod_logs_rejects_unsafe_pod_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="valid Kubernetes DNS label",
+    ):
+        kubernetes.get_pod_logs(
+            pod="pod;delete-all",
+            namespace="dev",
+        )
