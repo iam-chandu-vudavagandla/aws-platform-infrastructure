@@ -202,3 +202,131 @@ def test_unrelated_warning_event_is_ignored(
 
     assert report.approval_required is False
     assert "is healthy" in report.summary
+
+
+def test_unhealthy_pod_triggers_log_collection(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
+
+    log_result = tool_result(
+        "get_pod_logs",
+        {
+            "pod": "app-123",
+            "line_count": 2,
+            "truncated": False,
+            "logs": [
+                "Readiness probe failed.",
+                "Database connection timed out.",
+            ],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            log_result,
+        ]
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    report = kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_pod_logs",
+    ]
+
+    assert calls[3][1]["pod"] == "app-123"
+    assert calls[3][1]["namespace"] == "dev"
+    assert calls[3][1]["tail_lines"] == 100
+    assert calls[3][1]["since_seconds"] == 600
+
+    assert report.approval_required is True
+    assert len(report.tool_trace) == 4
+
+
+def test_unhealthy_pod_triggers_log_collection(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
+
+    log_result = tool_result(
+        "get_pod_logs",
+        {
+            "pod": "app-123",
+            "line_count": 2,
+            "truncated": False,
+            "logs": [
+                "Readiness probe failed.",
+                "Database connection timed out.",
+            ],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            log_result,
+        ]
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    report = kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_pod_logs",
+    ]
+
+    assert calls[3][1]["pod"] == "app-123"
+    assert calls[3][1]["namespace"] == "dev"
+    assert calls[3][1]["tail_lines"] == 100
+    assert calls[3][1]["since_seconds"] == 600
+
+    assert report.approval_required is True
+    assert len(report.tool_trace) == 4

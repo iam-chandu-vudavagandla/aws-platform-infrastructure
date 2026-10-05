@@ -205,6 +205,106 @@ def run_kubernetes_investigation(
     )
     trace.append(events_result)
 
+    if not events_result.success:
+        return create_kubernetes_report(
+            name=name,
+            namespace=namespace,
+            trace=trace,
+        )
+
+    deployment = deployment_result.data
+    pod_items = pods_result.data.get("pods", [])
+    event_items = events_result.data.get("events", [])
+
+    desired = deployment.get("desired_replicas", 0)
+    ready = deployment.get("ready_replicas", 0)
+    unavailable = deployment.get("unavailable_replicas", 0)
+
+    unhealthy_pods = [
+        pod
+        for pod in pod_items
+        if (
+            pod.get("phase") != "Running"
+            or pod.get("ready_containers", 0)
+            < pod.get("total_containers", 0)
+            or pod.get("restarts", 0) > 0
+        )
+    ]
+
+    pod_names = {
+        pod.get("name")
+        for pod in pod_items
+        if isinstance(pod.get("name"), str)
+    }
+
+    warning_pod_names = {
+        event.get("object_name")
+        for event in event_items
+        if (
+            event.get("type") == "Warning"
+            and event.get("object_name") in pod_names
+        )
+    }
+
+    investigation_has_problem = (
+        ready < desired
+        or unavailable > 0
+        or bool(unhealthy_pods)
+        or bool(warning_pod_names)
+    )
+
+    if investigation_has_problem and pod_items:
+        log_pod = next(
+            (
+                pod
+                for pod in unhealthy_pods
+                if isinstance(pod.get("name"), str)
+            ),
+            None,
+        )
+
+        if log_pod is None:
+            log_pod = next(
+                (
+                    pod
+                    for pod in pod_items
+                    if pod.get("name") in warning_pod_names
+                ),
+                None,
+            )
+
+        if log_pod is None:
+            log_pod = next(
+                (
+                    pod
+                    for pod in pod_items
+                    if isinstance(pod.get("name"), str)
+                ),
+                None,
+            )
+
+        if log_pod is not None:
+            log_arguments = {
+                "pod": log_pod["name"],
+                "namespace": namespace,
+                "tail_lines": 100,
+                "since_seconds": 600,
+            }
+
+            containers = deployment.get("containers", [])
+
+            if containers:
+                container_name = containers[0].get("name")
+
+                if isinstance(container_name, str) and container_name:
+                    log_arguments["container"] = container_name
+
+            logs_result = execute_tool(
+                "get_pod_logs",
+                log_arguments,
+            )
+            trace.append(logs_result)
+
     return create_kubernetes_report(
         name=name,
         namespace=namespace,
