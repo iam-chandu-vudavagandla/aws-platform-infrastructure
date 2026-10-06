@@ -1,5 +1,6 @@
 from platform_agent.agent import evidence_from_trace
 from platform_agent.contracts import Confidence, IncidentReport, ToolResult
+from platform_agent.llm import LLMError, diagnose_tool_trace
 from platform_agent.tool_registry import execute_tool
 
 
@@ -150,6 +151,30 @@ def create_kubernetes_report(
         approval_required=True,
         tool_trace=trace,
         errors=[],
+    )
+
+
+def enrich_report_with_llm(
+    report: IncidentReport,
+    trace: list[ToolResult],
+) -> IncidentReport:
+    """Enrich an unhealthy report with optional LLM reasoning."""
+
+    if report.errors or not report.approval_required:
+        return report
+
+    try:
+        diagnosis = diagnose_tool_trace(trace)
+    except LLMError:
+        return report
+
+    return report.model_copy(
+        update={
+            "summary": diagnosis.summary,
+            "probable_cause": diagnosis.probable_cause,
+            "confidence": diagnosis.confidence,
+            "recommended_action": diagnosis.recommended_action,
+        }
     )
 
 
@@ -305,8 +330,13 @@ def run_kubernetes_investigation(
             )
             trace.append(logs_result)
 
-    return create_kubernetes_report(
+    report = create_kubernetes_report(
         name=name,
         namespace=namespace,
+        trace=trace,
+    )
+
+    return enrich_report_with_llm(
+        report=report,
         trace=trace,
     )

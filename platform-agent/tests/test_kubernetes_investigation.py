@@ -204,10 +204,13 @@ def test_unrelated_warning_event_is_ignored(
     assert "is healthy" in report.summary
 
 
+
 def test_unhealthy_pod_triggers_log_collection(
     healthy_trace: list[ToolResult],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
     healthy_trace[1].data["pods"][0]["ready_containers"] = 0
 
     log_result = tool_result(
@@ -247,6 +250,21 @@ def test_unhealthy_pod_triggers_log_collection(
         fake_execute,
     )
 
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The deployment is degraded.",
+            probable_cause=(
+                "The affected pod is failing its readiness checks."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Review the pod logs and dependency connectivity."
+            ),
+        ),
+    )
+
     report = kubernetes_investigation.run_kubernetes_investigation(
         name="aws-platform-app",
         namespace="dev",
@@ -268,42 +286,24 @@ def test_unhealthy_pod_triggers_log_collection(
     assert len(report.tool_trace) == 4
 
 
-def test_unhealthy_pod_triggers_log_collection(
+def test_healthy_investigation_does_not_call_llm(
     healthy_trace: list[ToolResult],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
-
-    log_result = tool_result(
-        "get_pod_logs",
-        {
-            "pod": "app-123",
-            "line_count": 2,
-            "truncated": False,
-            "logs": [
-                "Readiness probe failed.",
-                "Database connection timed out.",
-            ],
-        },
-    )
-
-    results = iter(
-        [
-            healthy_trace[0],
-            healthy_trace[1],
-            healthy_trace[2],
-            log_result,
-        ]
-    )
-
-    calls: list[tuple[str, dict[str, Any]]] = []
+    results = iter(healthy_trace)
 
     def fake_execute(
         name: str,
         arguments: dict[str, Any],
     ) -> ToolResult:
-        calls.append((name, arguments))
         return next(results)
+
+    def forbidden_llm_call(
+        trace: list[ToolResult],
+    ):
+        raise AssertionError(
+            "LLM must not be called for a healthy investigation."
+        )
 
     monkeypatch.setattr(
         kubernetes_investigation,
@@ -311,22 +311,106 @@ def test_unhealthy_pod_triggers_log_collection(
         fake_execute,
     )
 
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        forbidden_llm_call,
+    )
+
     report = kubernetes_investigation.run_kubernetes_investigation(
         name="aws-platform-app",
         namespace="dev",
     )
 
-    assert [name for name, _ in calls] == [
-        "get_deployment",
-        "get_pods",
-        "get_events",
-        "get_pod_logs",
-    ]
+    assert report.approval_required is False
+    assert report.errors == []
+    assert "is healthy" in report.summary
+    assert len(report.tool_trace) == 3
 
-    assert calls[3][1]["pod"] == "app-123"
-    assert calls[3][1]["namespace"] == "dev"
-    assert calls[3][1]["tail_lines"] == 100
-    assert calls[3][1]["since_seconds"] == 600
 
-    assert report.approval_required is True
-    assert len(report.tool_trace) == 4
+def test_llm_enriches_unhealthy_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application deployment is degraded.",
+            probable_cause=(
+                "One replica is currently unavailable."
+            ),
+            confidence=Confidence.MEDIUM,
+            recommended_action=(
+                "Verify pod health and dependency connectivity."
+            ),
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == (
+        "The application deployment is degraded."
+    )
+    assert enriched.probable_cause == (
+        "One replica is currently unavailable."
+    )
+    assert enriched.confidence == Confidence.MEDIUM
+    assert enriched.recommended_action == (
+        "Verify pod health and dependency connectivity."
+    )
+
+    # Safety-critical fields remain deterministic.
+    assert enriched.approval_required is True
+    assert enriched.evidence == report.evidence
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors
+
+
+def test_llm_failure_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    def failed_diagnosis(
+        trace: list[ToolResult],
+    ):
+        raise kubernetes_investigation.LLMError(
+            "Ollama is unavailable."
+        )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        failed_diagnosis,
+    )
+
+    result = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert result == report
+
