@@ -56,3 +56,11 @@ class IncidentReport(StrictModel):
     approval_required: bool
     tool_trace: list[ToolResult]
     errors: list[str] = Field(default_factory=list)
+
+class LLMDiagnosis(StrictModel):
+    """Structured diagnosis generated from collected operational evidence."""
+
+    summary: str = Field(min_length=1)
+    probable_cause: str = Field(min_length=1)
+    confidence: Confidence
+    recommended_action: str = Field(min_length=1)
