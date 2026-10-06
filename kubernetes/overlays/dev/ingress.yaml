@@ -6,14 +6,17 @@ metadata:
     alb.ingress.kubernetes.io/load-balancer-name: aws-platform-dev-alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:140878155309:certificate/bee9c6cf-e753-4f4c-9805-6da60c80b51c
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
     alb.ingress.kubernetes.io/success-codes: "200"
 spec:
   ingressClassName: alb
   rules:
-    - http:
+    - host: chandu.is-a.dev
+      http:
         paths:
           - path: /
             pathType: Prefix
