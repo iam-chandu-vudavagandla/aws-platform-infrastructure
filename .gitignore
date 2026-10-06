@@ -43,3 +43,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+
+# Application Python virtual environment
+application/.venv/
