@@ -414,3 +414,122 @@ def test_llm_failure_falls_back_to_deterministic_report(
 
     assert result == report
 
+def test_llm_does_not_receive_unrelated_namespace_events(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
+    healthy_trace[1].data["pods"][0]["restarts"] = 5
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "BackOff",
+            "message": "Back-off restarting failed container.",
+            "object_kind": "Pod",
+            "object_name": "app-123",
+        },
+        {
+            "type": "Warning",
+            "reason": "FailedDeployModel",
+            "message": "UnsupportedCertificate from unrelated ingress.",
+            "object_kind": "Ingress",
+            "object_name": "nginx-ingress",
+        },
+    ]
+
+    log_result = tool_result(
+        "get_pod_logs",
+        {
+            "pod": "app-123",
+            "line_count": 1,
+            "truncated": False,
+            "logs": [
+                "Simulated application startup failure",
+            ],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            log_result,
+        ]
+    )
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        return next(results)
+
+    captured_trace: list[ToolResult] = []
+
+    def fake_diagnose(
+        trace: list[ToolResult],
+    ) -> LLMDiagnosis:
+        captured_trace.extend(trace)
+
+        return LLMDiagnosis(
+            summary="The container is repeatedly crashing.",
+            probable_cause=(
+                "The workload is repeatedly exiting during startup."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Review the failing container startup logs."
+            ),
+        )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        fake_diagnose,
+    )
+
+    report = kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    llm_events_result = next(
+        result
+        for result in captured_trace
+        if result.tool == "get_events"
+    )
+
+    llm_messages = [
+        event["message"]
+        for event in llm_events_result.data["events"]
+    ]
+
+    assert any(
+        "Back-off restarting failed container" in message
+        for message in llm_messages
+    )
+
+    assert not any(
+        "UnsupportedCertificate" in message
+        for message in llm_messages
+    )
+
+    original_events_result = next(
+        result
+        for result in report.tool_trace
+        if result.tool == "get_events"
+    )
+
+    assert len(original_events_result.data["events"]) == 2

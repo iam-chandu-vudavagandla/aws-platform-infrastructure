@@ -154,6 +154,64 @@ def create_kubernetes_report(
     )
 
 
+
+def _incident_scoped_trace(
+    name: str,
+    trace: list[ToolResult],
+) -> list[ToolResult]:
+    """Return an LLM trace containing only incident-relevant events."""
+
+    pods_result = next(
+        (
+            result
+            for result in trace
+            if result.tool == "get_pods" and result.success
+        ),
+        None,
+    )
+
+    pod_names: set[str] = set()
+
+    if pods_result is not None:
+        pod_names = {
+            pod["name"]
+            for pod in pods_result.data.get("pods", [])
+            if isinstance(pod.get("name"), str)
+        }
+
+    relevant_object_names = {
+        name,
+        *pod_names,
+    }
+
+    scoped_trace: list[ToolResult] = []
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            scoped_trace.append(result)
+            continue
+
+        relevant_events = [
+            event
+            for event in result.data.get("events", [])
+            if event.get("object_name") in relevant_object_names
+        ]
+
+        scoped_data = {
+            **result.data,
+            "events": relevant_events,
+            "returned_events": len(relevant_events),
+        }
+
+        scoped_trace.append(
+            result.model_copy(
+                update={"data": scoped_data},
+            )
+        )
+
+    return scoped_trace
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -336,7 +394,12 @@ def run_kubernetes_investigation(
         trace=trace,
     )
 
+    llm_trace = _incident_scoped_trace(
+        name=name,
+        trace=trace,
+    )
+
     return enrich_report_with_llm(
         report=report,
-        trace=trace,
+        trace=llm_trace,
     )
