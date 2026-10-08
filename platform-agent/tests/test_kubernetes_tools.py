@@ -30,10 +30,17 @@ def test_get_pods_returns_safe_summary(
                     "phase": "Running",
                     "podIP": "10.0.11.25",
                     "containerStatuses": [
-                        {
-                            "ready": True,
-                            "restartCount": 0,
-                        }
+        {
+            "name": "aws-platform-app",
+            "ready": True,
+            "restartCount": 0,
+            "state": {
+                "running": {
+                    "startedAt": "2026-09-25T17:45:00Z",
+                }
+             },
+                 "lastState": {},
+        }
                     ],
                 },
             }
@@ -53,6 +60,16 @@ def test_get_pods_returns_safe_summary(
     assert result["pods"][0]["phase"] == "Running"
     assert result["pods"][0]["ready_containers"] == 1
     assert result["pods"][0]["restarts"] == 0
+    container = result["pods"][0]["containers"][0]
+
+    assert container["name"] == "aws-platform-app"
+    assert container["ready"] is True
+    assert container["restart_count"] == 0
+    assert container["state"] == "running"
+    assert container["state_reason"] is None
+    assert container["last_state"] is None
+    assert container["last_reason"] is None
+    assert container["last_exit_code"] is None
     assert result["pods"][0]["node"] == "worker-node-1"
 
 
@@ -404,3 +421,70 @@ def test_get_pod_logs_rejects_unsafe_pod_name() -> None:
             pod="pod;delete-all",
             namespace="dev",
         )
+
+
+def test_get_pods_reports_container_failure_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "crashloop-demo-abc123",
+                },
+                "spec": {
+                    "nodeName": "worker-node-1",
+                },
+                "status": {
+                    "phase": "Running",
+                    "podIP": "10.0.11.50",
+                    "containerStatuses": [
+                        {
+                            "name": "busybox",
+                            "ready": False,
+                            "restartCount": 12,
+                            "state": {
+                                "waiting": {
+                                    "reason": "CrashLoopBackOff",
+                                    "message": "back-off restarting failed container",
+                                }
+                            },
+                            "lastState": {
+                                "terminated": {
+                                    "reason": "Error",
+                                    "exitCode": 1,
+                                }
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        kubernetes.subprocess,
+        "run",
+        lambda *args, **kwargs: successful_result(payload),
+    )
+
+    result = kubernetes.get_pods(
+        "dev",
+        selector="app=crashloop-demo",
+    )
+
+    pod = result["pods"][0]
+    container = pod["containers"][0]
+
+    assert pod["phase"] == "Running"
+    assert pod["ready_containers"] == 0
+    assert pod["restarts"] == 12
+
+    assert container["name"] == "busybox"
+    assert container["ready"] is False
+    assert container["restart_count"] == 12
+    assert container["state"] == "waiting"
+    assert container["state_reason"] == "CrashLoopBackOff"
+    assert container["last_state"] == "terminated"
+    assert container["last_reason"] == "Error"
+    assert container["last_exit_code"] == 1

@@ -131,6 +131,69 @@ def get_pods(
         spec = item.get("spec", {})
         status = item.get("status", {})
         container_statuses = status.get("containerStatuses", [])
+
+        container_summaries = []
+
+        for container in container_statuses:
+            state = container.get("state") or {}
+            last_state = container.get("lastState") or {}
+
+            state_name = next(
+                (
+                    candidate
+                    for candidate in (
+                        "running",
+                        "waiting",
+                        "terminated",
+                    )
+                    if candidate in state
+                ),
+                None,
+            )
+
+            last_state_name = next(
+                (
+                    candidate
+                    for candidate in (
+                        "running",
+                        "waiting",
+                        "terminated",
+                    )
+                    if candidate in last_state
+                ),
+                None,
+            )
+
+            state_details = (
+                state.get(state_name, {})
+                if state_name is not None
+                else {}
+            )
+
+            last_state_details = (
+                last_state.get(last_state_name, {})
+                if last_state_name is not None
+                else {}
+            )
+
+            container_summaries.append(
+                {
+                    "name": container.get("name", "unknown"),
+                    "ready": container.get("ready") is True,
+                    "restart_count": container.get(
+                        "restartCount",
+                        0,
+                    ),
+                    "state": state_name,
+                    "state_reason": state_details.get("reason"),
+                    "last_state": last_state_name,
+                    "last_reason": last_state_details.get("reason"),
+                    "last_exit_code": last_state_details.get(
+                        "exitCode"
+                    ),
+                }
+            )
+
         pods.append(
             {
                 "name": metadata.get("name", "unknown"),
@@ -142,8 +205,10 @@ def get_pods(
                 ),
                 "total_containers": len(container_statuses),
                 "restarts": sum(
-                    container.get("restartCount", 0) for container in container_statuses
+                    container.get("restartCount", 0)
+                    for container in container_statuses
                 ),
+                "containers": container_summaries,
                 "node": spec.get("nodeName"),
                 "pod_ip": status.get("podIP"),
             }
