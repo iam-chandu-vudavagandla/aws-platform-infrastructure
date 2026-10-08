@@ -125,3 +125,59 @@ def test_diagnose_tool_trace_rejects_empty_trace() -> None:
         match="at least one tool result",
     ):
         llm.diagnose_tool_trace([])
+def test_diagnose_tool_trace_rejects_state_changing_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The pod is unhealthy.",'
+                '"probable_cause":"The container is repeatedly failing.",'
+                '"confidence":"high",'
+                '"recommended_action":"Run kubectl delete pod app-123."'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())
+
+
+def test_diagnose_tool_trace_rejects_unsupported_restart_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The pod is in CrashLoopBackOff.",'
+                '"probable_cause":"The container is repeatedly exiting.",'
+                '"confidence":"high",'
+                '"recommended_action":"Consider increasing the restart limit for the Deployment."'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())
