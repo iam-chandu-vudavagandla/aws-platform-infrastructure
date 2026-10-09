@@ -235,6 +235,24 @@ def enrich_report_with_llm(
         }
     )
 
+def _pod_has_loggable_container(
+    pod: dict,
+) -> bool:
+    """Return whether pod container state indicates logs may exist."""
+
+    containers = pod.get("containers", [])
+
+    for container in containers:
+        if container.get("state") in {
+            "running",
+            "terminated",
+        }:
+            return True
+
+        if container.get("last_state") == "terminated":
+            return True
+
+    return False
 
 def run_kubernetes_investigation(
     name: str,
@@ -336,11 +354,17 @@ def run_kubernetes_investigation(
         or bool(warning_pod_names)
     )
 
-    if investigation_has_problem and pod_items:
+    loggable_unhealthy_pods = [
+        pod
+        for pod in unhealthy_pods
+        if _pod_has_loggable_container(pod)
+    ]
+
+    if investigation_has_problem and loggable_unhealthy_pods:
         log_pod = next(
             (
                 pod
-                for pod in unhealthy_pods
+                for pod in loggable_unhealthy_pods
                 if isinstance(pod.get("name"), str)
             ),
             None,
@@ -350,18 +374,8 @@ def run_kubernetes_investigation(
             log_pod = next(
                 (
                     pod
-                    for pod in pod_items
+                    for pod in loggable_unhealthy_pods
                     if pod.get("name") in warning_pod_names
-                ),
-                None,
-            )
-
-        if log_pod is None:
-            log_pod = next(
-                (
-                    pod
-                    for pod in pod_items
-                    if isinstance(pod.get("name"), str)
                 ),
                 None,
             )
@@ -387,6 +401,7 @@ def run_kubernetes_investigation(
                 log_arguments,
             )
             trace.append(logs_result)
+
 
     report = create_kubernetes_report(
         name=name,

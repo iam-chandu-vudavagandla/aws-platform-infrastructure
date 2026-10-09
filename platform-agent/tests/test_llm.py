@@ -181,3 +181,31 @@ def test_diagnose_tool_trace_rejects_unsupported_restart_limit(
         match="unsafe recommendation",
     ):
         llm.diagnose_tool_trace(sample_trace())
+
+def test_diagnose_tool_trace_rejects_workload_update_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The pod cannot pull its image.",'
+                '"probable_cause":"The configured image tag does not exist.",'
+                '"confidence":"high",'
+                '"recommended_action":"Update the deployment to use a valid image."'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())

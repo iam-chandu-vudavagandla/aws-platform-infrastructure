@@ -34,6 +34,12 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
         r"\bincreas(?:e|ing)\s+(?:the\s+)?restart\s+limit\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:update|modify|change)\s+"
+        r"(?:the\s+)?"
+        r"(?:deployment|pod|workload|service|statefulset|daemonset|container)\b",
+        re.IGNORECASE,
+    ),
 )
 
 

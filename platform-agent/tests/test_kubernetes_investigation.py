@@ -211,7 +211,18 @@ def test_unhealthy_pod_triggers_log_collection(
 ) -> None:
     from platform_agent.contracts import LLMDiagnosis
 
-    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
+    healthy_trace[1].data["pods"][0]["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 0,
+            "state": "running",
+            "state_reason": None,
+            "last_state": None,
+            "last_reason": None,
+            "last_exit_code": None,
+     }
+    ]
 
     log_result = tool_result(
         "get_pod_logs",
@@ -236,6 +247,46 @@ def test_unhealthy_pod_triggers_log_collection(
     )
 
     calls: list[tuple[str, dict[str, Any]]] = []
+def test_image_pull_failure_skips_log_collection(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["phase"] = "Pending"
+    pod["ready_containers"] = 0
+    pod["restarts"] = 0
+    pod["containers"] = [
+        {
+            "name": "busybox",
+            "ready": False,
+            "restart_count": 0,
+            "state": "waiting",
+            "state_reason": "ImagePullBackOff",
+            "last_state": None,
+            "last_reason": None,
+            "last_exit_code": None,
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Failed",
+            "message": (
+                'Failed to pull image '
+                '"busybox:this-tag-does-not-exist": not found'
+            ),
+            "object_name": "app-123",
+        }
+    ]
+
+    results = iter(healthy_trace)
+    calls: list[tuple[str, dict[str, Any]]] = []
 
     def fake_execute(
         name: str,
@@ -254,13 +305,13 @@ def test_unhealthy_pod_triggers_log_collection(
         kubernetes_investigation,
         "diagnose_tool_trace",
         lambda trace: LLMDiagnosis(
-            summary="The deployment is degraded.",
+            summary="The pod cannot pull its container image.",
             probable_cause=(
-                "The affected pod is failing its readiness checks."
+                "The configured container image could not be found."
             ),
             confidence=Confidence.HIGH,
             recommended_action=(
-                "Review the pod logs and dependency connectivity."
+                "Verify the configured image repository and tag."
             ),
         ),
     )
@@ -274,16 +325,16 @@ def test_unhealthy_pod_triggers_log_collection(
         "get_deployment",
         "get_pods",
         "get_events",
-        "get_pod_logs",
     ]
 
-    assert calls[3][1]["pod"] == "app-123"
-    assert calls[3][1]["namespace"] == "dev"
-    assert calls[3][1]["tail_lines"] == 100
-    assert calls[3][1]["since_seconds"] == 600
+    assert "get_pod_logs" not in [
+        name
+        for name, _ in calls
+    ]
 
+    assert report.confidence == Confidence.HIGH
     assert report.approval_required is True
-    assert len(report.tool_trace) == 4
+    assert report.errors == []
 
 
 def test_healthy_investigation_does_not_call_llm(
