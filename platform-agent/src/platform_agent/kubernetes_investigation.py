@@ -212,6 +212,39 @@ def _incident_scoped_trace(
     return scoped_trace
 
 
+def _trace_has_readiness_probe_failure(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported a readiness failure."""
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            message = str(
+                event.get("message", "")
+            ).lower()
+
+            if "readiness probe failed" in message:
+                return True
+
+    return False
+
+
+def _diagnosis_mentions_readiness(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the readiness failure mode."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    return "readiness" in diagnosis_text
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -224,6 +257,15 @@ def enrich_report_with_llm(
     try:
         diagnosis = diagnose_tool_trace(trace)
     except LLMError:
+        return report
+
+    if (
+        _trace_has_readiness_probe_failure(trace)
+        and not _diagnosis_mentions_readiness(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
         return report
 
     return report.model_copy(

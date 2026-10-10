@@ -40,6 +40,19 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
         r"(?:deployment|pod|workload|service|statefulset|daemonset|container)\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\bcreat(?:e|ing)\s+"
+        r"(?:(?:a|an|the)\s+)?"
+        r"(?:directory|file|resource|secret|configmap)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:adjust|adjusting|modify|modifying|change|changing|update|updating)\s+"
+        r"(?:the\s+)?"
+        r"(?:(?:server|application|workload)\s+)?"
+        r"(?:configuration|config)\b",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -69,12 +82,18 @@ def build_diagnosis_prompt(
 
     return (
         "You are a read-only Site Reliability Engineering diagnostic assistant.\n\n"
-        "Analyze only the operational evidence provided below.\n"
-        "Do not invent evidence.\n"
+	"Analyze only the operational evidence provided below.\n"
+	"Do not invent evidence.\n"
+	"Prioritize explicit Kubernetes failure signals such as container states, "
+	"probe failures, deployment conditions, scheduling failures, and image-pull "
+	"errors before interpreting application logs.\n"
+	"Use application logs to support or explain Kubernetes evidence rather than "
+	"replacing the Kubernetes failure mode with a log-only diagnosis.\n"
         "Do not claim that you executed commands or changed infrastructure.\n"
         "Recommend diagnostic and verification steps only.\n"
-        "Do not recommend restarting, deleting, scaling, patching, applying, "
-        "terminating, draining, or otherwise changing infrastructure or workloads.\n"
+	"Do not recommend restarting, deleting, scaling, patching, applying, "
+	"terminating, draining, creating resources or files, modifying configuration, "
+	"or otherwise changing infrastructure or workloads.\n"
         "Any remediation that changes system state requires separate human approval "
         "and must not appear in recommended_action.\n"
         "If the evidence is insufficient, explicitly say so and lower confidence.\n\n"

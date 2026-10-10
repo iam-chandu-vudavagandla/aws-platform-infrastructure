@@ -211,7 +211,12 @@ def test_unhealthy_pod_triggers_log_collection(
 ) -> None:
     from platform_agent.contracts import LLMDiagnosis
 
-    healthy_trace[1].data["pods"][0]["containers"] = [
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["containers"] = [
         {
             "name": "app",
             "ready": False,
@@ -221,7 +226,19 @@ def test_unhealthy_pod_triggers_log_collection(
             "last_state": None,
             "last_reason": None,
             "last_exit_code": None,
-     }
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": (
+                "Readiness probe failed: "
+                "HTTP probe failed with statuscode: 404"
+            ),
+            "object_name": "app-123",
+        }
     ]
 
     log_result = tool_result(
@@ -231,8 +248,8 @@ def test_unhealthy_pod_triggers_log_collection(
             "line_count": 2,
             "truncated": False,
             "logs": [
+                "GET /health HTTP/1.1 404",
                 "Readiness probe failed.",
-                "Database connection timed out.",
             ],
         },
     )
@@ -247,6 +264,53 @@ def test_unhealthy_pod_triggers_log_collection(
     )
 
     calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The pod has a readiness probe failure.",
+            probable_cause=(
+                "The readiness endpoint is returning HTTP 404."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Verify the configured readiness path and response."
+            ),
+        ),
+    )
+
+    report = kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_pod_logs",
+    ]
+
+    assert calls[3][1]["pod"] == "app-123"
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+    assert report.errors == []
+
+
 def test_image_pull_failure_skips_log_collection(
     healthy_trace: list[ToolResult],
     monkeypatch: pytest.MonkeyPatch,
@@ -584,3 +648,57 @@ def test_llm_does_not_receive_unrelated_namespace_events(
     )
 
     assert len(original_events_result.data["events"]) == 2
+
+def test_llm_readiness_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    healthy_trace[1].data["pods"][0]["ready_containers"] = 0
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": (
+                "Readiness probe failed: "
+                "HTTP probe failed with statuscode: 404"
+            ),
+            "object_name": "app-123",
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="NGINX cannot find a requested file.",
+            probable_cause=(
+                "The requested file does not exist."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Verify whether the requested file exists."
+            ),
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert enriched.confidence == report.confidence
+    assert enriched.recommended_action == report.recommended_action

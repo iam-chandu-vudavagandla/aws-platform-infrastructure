@@ -44,7 +44,7 @@ def test_build_diagnosis_prompt_contains_evidence() -> None:
     assert "get_pod_logs" in prompt
     assert "Database connection timed out." in prompt
     assert "Do not invent evidence." in prompt
-
+    assert "Prioritize explicit Kubernetes failure signals" in prompt
 
 def test_diagnose_tool_trace_returns_valid_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
@@ -193,6 +193,41 @@ def test_diagnose_tool_trace_rejects_workload_update_recommendation(
                 '"probable_cause":"The configured image tag does not exist.",'
                 '"confidence":"high",'
                 '"recommended_action":"Update the deployment to use a valid image."'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())
+@pytest.mark.parametrize(
+    "recommended_action",
+    [
+        "Consider creating the directory expected by the readiness probe.",
+        "Consider adjusting the server configuration to serve the requested path.",
+    ],
+)
+def test_diagnose_tool_trace_rejects_readiness_remediation(
+    monkeypatch: pytest.MonkeyPatch,
+    recommended_action: str,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The readiness probe is failing.",'
+                '"probable_cause":"The configured path returns HTTP 404.",'
+                '"confidence":"high",'
+                f'"recommended_action":"{recommended_action}"'
                 "}"
             )
         )
