@@ -53,6 +53,20 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
         r"(?:configuration|config)\b",
         re.IGNORECASE,
     ),
+
+    re.compile(
+        r"\bincreas(?:e|ing)\s+"
+        r"(?:the\s+)?"
+        r"(?:resource\s+)?"
+        r"limits?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:manually\s+)?scal(?:e|ing)\s+"
+        r"(?:the\s+)?"
+        r"(?:pod|deployment|node|workload|service|statefulset|daemonset)\b",
+        re.IGNORECASE,
+    ),
 )
 
 

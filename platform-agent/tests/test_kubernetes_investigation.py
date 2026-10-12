@@ -702,3 +702,157 @@ def test_llm_readiness_mismatch_falls_back_to_deterministic_report(
     assert enriched.probable_cause == report.probable_cause
     assert enriched.confidence == report.confidence
     assert enriched.recommended_action == report.recommended_action
+
+
+def test_llm_failed_scheduling_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["phase"] = "Pending"
+    pod["ready_containers"] = 0
+    pod["total_containers"] = 0
+    pod["containers"] = []
+    pod["node"] = None
+    pod["pod_ip"] = None
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "FailedScheduling",
+            "message": (
+                "0/2 nodes are available: "
+                "2 Insufficient cpu. "
+                "preemption: 0/2 nodes are available: "
+                "2 Preemption is not helpful for scheduling."
+            ),
+            "object_name": "app-123",
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=(
+                "The deployment has a pod in a Pending state."
+            ),
+            probable_cause=(
+                "The deployment may have a generic scheduling issue."
+            ),
+            confidence=Confidence.MEDIUM,
+            recommended_action=(
+                "Review the deployment and node state."
+            ),
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert enriched.confidence == report.confidence
+    assert enriched.recommended_action == report.recommended_action
+
+def test_failed_scheduling_does_not_collect_logs_from_unrelated_running_pod(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending_pod = healthy_trace[1].data["pods"][0]
+    pending_pod["name"] = "app-pending"
+    pending_pod["phase"] = "Pending"
+    pending_pod["ready_containers"] = 0
+    pending_pod["total_containers"] = 0
+    pending_pod["restarts"] = 0
+    pending_pod["containers"] = []
+    pending_pod["node"] = None
+    pending_pod["pod_ip"] = None
+
+    running_pod = {
+        "name": "app-old",
+        "phase": "Running",
+        "ready_containers": 1,
+        "total_containers": 1,
+        "restarts": 3,
+        "containers": [
+            {
+                "name": "app",
+                "ready": True,
+                "restart_count": 3,
+                "state": "running",
+                "state_reason": None,
+                "last_state": "terminated",
+                "last_reason": "Completed",
+                "last_exit_code": 0,
+            }
+        ],
+        "node": "node-a",
+        "pod_ip": "10.0.0.10",
+    }
+
+    healthy_trace[1].data["pods"].append(running_pod)
+
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "FailedScheduling",
+            "message": (
+                "0/2 nodes are available: "
+                "2 Insufficient cpu."
+            ),
+            "object_name": "app-pending",
+        }
+    ]
+
+    results = iter(healthy_trace[:3])
+
+    calls: list[str] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: (_ for _ in ()).throw(
+            kubernetes_investigation.LLMError("skip llm")
+        ),
+    )
+
+    kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    assert calls == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+    ]

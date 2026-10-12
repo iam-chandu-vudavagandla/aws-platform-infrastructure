@@ -244,3 +244,45 @@ def test_diagnose_tool_trace_rejects_readiness_remediation(
         match="unsafe recommendation",
     ):
         llm.diagnose_tool_trace(sample_trace())
+
+@pytest.mark.parametrize(
+    "recommended_action",
+    [
+        (
+            "Consider increasing the resource limits "
+            "for the deployment or the node."
+        ),
+        (
+            "If the issue persists, consider manually scaling "
+            "the deployment to force the deployment to progress."
+        ),
+    ],
+)
+def test_diagnose_tool_trace_rejects_scheduling_remediation(
+    monkeypatch: pytest.MonkeyPatch,
+    recommended_action: str,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The pod cannot be scheduled.",'
+                '"probable_cause":"The cluster has insufficient CPU.",'
+                '"confidence":"high",'
+                f'"recommended_action":"{recommended_action}"'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())

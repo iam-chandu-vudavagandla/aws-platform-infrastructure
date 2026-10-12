@@ -245,6 +245,46 @@ def _diagnosis_mentions_readiness(
     return "readiness" in diagnosis_text
 
 
+def _trace_has_failed_scheduling(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported FailedScheduling."""
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            reason = str(
+                event.get("reason", "")
+            ).lower()
+
+            if reason == "failedscheduling":
+                return True
+
+    return False
+
+
+def _diagnosis_preserves_failed_scheduling(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the scheduling failure signal."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    compact_text = diagnosis_text.replace(" ", "")
+
+    return (
+        "failedscheduling" in compact_text
+        or "failed scheduling" in diagnosis_text
+        or "insufficient cpu" in diagnosis_text
+        or "insufficient memory" in diagnosis_text
+    )
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -262,6 +302,15 @@ def enrich_report_with_llm(
     if (
         _trace_has_readiness_probe_failure(trace)
         and not _diagnosis_mentions_readiness(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    if (
+        _trace_has_failed_scheduling(trace)
+        and not _diagnosis_preserves_failed_scheduling(
             diagnosis.summary,
             diagnosis.probable_cause,
         )
@@ -396,31 +445,24 @@ def run_kubernetes_investigation(
         or bool(warning_pod_names)
     )
 
-    loggable_unhealthy_pods = [
+    loggable_warning_pods = [
         pod
         for pod in unhealthy_pods
-        if _pod_has_loggable_container(pod)
+        if (
+            pod.get("name") in warning_pod_names
+            and _pod_has_loggable_container(pod)
+        )
     ]
 
-    if investigation_has_problem and loggable_unhealthy_pods:
+    if investigation_has_problem and loggable_warning_pods:
         log_pod = next(
             (
                 pod
-                for pod in loggable_unhealthy_pods
+                for pod in loggable_warning_pods
                 if isinstance(pod.get("name"), str)
             ),
             None,
         )
-
-        if log_pod is None:
-            log_pod = next(
-                (
-                    pod
-                    for pod in loggable_unhealthy_pods
-                    if pod.get("name") in warning_pod_names
-                ),
-                None,
-            )
 
         if log_pod is not None:
             log_arguments = {
