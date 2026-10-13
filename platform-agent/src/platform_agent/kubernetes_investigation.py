@@ -100,6 +100,16 @@ def create_kubernetes_report(
                 f"Pod {pod_name} reports {pod['restarts']} container restarts."
             )
 
+        for container in pod.get("containers", []):
+            if container.get("last_reason") == "OOMKilled":
+                container_name = container.get("name", "unknown")
+                exit_code = container.get("last_exit_code")
+
+                findings.append(
+                    f"Container {container_name} in pod {pod_name} "
+                    f"was OOMKilled with exit code {exit_code}."
+                )
+
     relevant_object_names = {
         name,
         *(pod.get("name") for pod in pod_items if isinstance(pod.get("name"), str)),
@@ -285,6 +295,39 @@ def _diagnosis_preserves_failed_scheduling(
     )
 
 
+def _trace_has_oomkilled(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes reported an OOMKilled container."""
+
+    for result in trace:
+        if result.tool != "get_pods" or not result.success:
+            continue
+
+        for pod in result.data.get("pods", []):
+            for container in pod.get("containers", []):
+                if container.get("last_reason") == "OOMKilled":
+                    return True
+
+    return False
+
+
+def _diagnosis_preserves_oomkilled(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the OOM failure signal."""
+
+    diagnosis_text = f"{summary} {probable_cause}".lower()
+
+    return (
+        "oomkilled" in diagnosis_text
+        or "oom killed" in diagnosis_text
+        or "out of memory" in diagnosis_text
+        or "exit code 137" in diagnosis_text
+    )
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -311,6 +354,15 @@ def enrich_report_with_llm(
     if (
         _trace_has_failed_scheduling(trace)
         and not _diagnosis_preserves_failed_scheduling(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    if (
+        _trace_has_oomkilled(trace)
+        and not _diagnosis_preserves_oomkilled(
             diagnosis.summary,
             diagnosis.probable_cause,
         )

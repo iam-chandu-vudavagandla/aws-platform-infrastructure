@@ -57,12 +57,13 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
     re.compile(
         r"\bincreas(?:e|ing)\s+"
         r"(?:the\s+)?"
-        r"(?:resource\s+)?"
+        r"(?:(?:resource|memory|cpu)\s+)?"
         r"limits?\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\b(?:manually\s+)?scal(?:e|ing)\s+"
+        r"(?:(?:up|down)\s+)?"
         r"(?:the\s+)?"
         r"(?:pod|deployment|node|workload|service|statefulset|daemonset)\b",
         re.IGNORECASE,

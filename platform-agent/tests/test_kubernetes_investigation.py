@@ -856,3 +856,94 @@ def test_failed_scheduling_does_not_collect_logs_from_unrelated_running_pod(
         "get_pods",
         "get_events",
     ]
+
+
+def test_report_preserves_oomkilled_container_evidence(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["available_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 4
+    pod["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 4,
+            "state": "waiting",
+            "state_reason": "CrashLoopBackOff",
+            "last_state": "terminated",
+            "last_reason": "OOMKilled",
+            "last_exit_code": 137,
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    assert "OOMKilled" in report.probable_cause
+    assert "exit code 137" in report.probable_cause
+
+
+def test_llm_oomkilled_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["available_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 4
+    pod["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 4,
+            "state": "waiting",
+            "state_reason": "CrashLoopBackOff",
+            "last_state": "terminated",
+            "last_reason": "OOMKilled",
+            "last_exit_code": 137,
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application container is repeatedly restarting.",
+            probable_cause=(
+                "The application may be encountering a generic runtime failure."
+            ),
+            confidence=Confidence.MEDIUM,
+            recommended_action=(
+                "Review the collected Kubernetes evidence."
+            ),
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert "OOMKilled" in enriched.probable_cause
+    assert "exit code 137" in enriched.probable_cause

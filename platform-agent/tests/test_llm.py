@@ -256,6 +256,14 @@ def test_diagnose_tool_trace_rejects_readiness_remediation(
             "If the issue persists, consider manually scaling "
             "the deployment to force the deployment to progress."
         ),
+        (
+            "Consider increasing the memory limits "
+            "for the container or the deployment."
+        ),
+        (
+            "If the issue persists, consider scaling down "
+            "the deployment to a lower number of replicas."
+        ),
     ],
 )
 def test_diagnose_tool_trace_rejects_scheduling_remediation(
