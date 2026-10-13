@@ -255,6 +255,39 @@ def _diagnosis_mentions_readiness(
     return "readiness" in diagnosis_text
 
 
+def _trace_has_liveness_probe_failure(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported a liveness failure."""
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            message = str(
+                event.get("message", "")
+            ).lower()
+
+            if "liveness probe failed" in message:
+                return True
+
+    return False
+
+
+def _diagnosis_mentions_liveness(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the liveness failure mode."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    return "liveness" in diagnosis_text
+
+
 def _trace_has_failed_scheduling(
     trace: list[ToolResult],
 ) -> bool:
@@ -345,6 +378,15 @@ def enrich_report_with_llm(
     if (
         _trace_has_readiness_probe_failure(trace)
         and not _diagnosis_mentions_readiness(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    if (
+        _trace_has_liveness_probe_failure(trace)
+        and not _diagnosis_mentions_liveness(
             diagnosis.summary,
             diagnosis.probable_cause,
         )

@@ -947,3 +947,68 @@ def test_llm_oomkilled_mismatch_falls_back_to_deterministic_report(
     assert enriched.probable_cause == report.probable_cause
     assert "OOMKilled" in enriched.probable_cause
     assert "exit code 137" in enriched.probable_cause
+
+
+def test_llm_liveness_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["available_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 4
+    pod["containers"] = [
+        {
+            "name": "nginx",
+            "ready": False,
+            "restart_count": 4,
+            "state": "waiting",
+            "state_reason": "CrashLoopBackOff",
+            "last_state": "terminated",
+            "last_reason": "Completed",
+            "last_exit_code": 0,
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": (
+                "Liveness probe failed: "
+                "HTTP probe failed with statuscode: 404"
+            ),
+            "object_name": "app-123",
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application is shutting down gracefully.",
+            probable_cause="The process received a termination signal.",
+            confidence=Confidence.HIGH,
+            recommended_action="No immediate action is required.",
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert "Liveness probe failed" in enriched.probable_cause
