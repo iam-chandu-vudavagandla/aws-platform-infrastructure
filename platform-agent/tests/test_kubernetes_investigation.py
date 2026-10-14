@@ -1012,3 +1012,74 @@ def test_llm_liveness_mismatch_falls_back_to_deterministic_report(
     assert enriched.summary == report.summary
     assert enriched.probable_cause == report.probable_cause
     assert "Liveness probe failed" in enriched.probable_cause
+
+
+def test_llm_missing_secret_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["ready_replicas"] = 1
+    healthy_trace[0].data["available_replicas"] = 1
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    healthy_trace[1].data["pods"] = [
+        {
+            "name": "secret-demo-123",
+            "phase": "Pending",
+            "ready_containers": 0,
+            "total_containers": 1,
+            "restarts": 0,
+            "containers": [
+                {
+                    "name": "nginx",
+                    "ready": False,
+                    "restart_count": 0,
+                    "state": "waiting",
+                    "state_reason": "CreateContainerConfigError",
+                    "last_state": None,
+                    "last_reason": None,
+                    "last_exit_code": None,
+                }
+            ],
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Failed",
+            "message": 'Error: secret "missing-secret-demo" not found',
+            "object_kind": "Pod",
+            "object_name": "secret-demo-123",
+        }
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="secret-demo",
+        namespace="dev",
+        trace=healthy_trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The container cannot start.",
+            probable_cause=(
+                "The nginx image may be corrupted or incorrectly configured."
+            ),
+            confidence=Confidence.MEDIUM,
+            recommended_action="Review the collected evidence.",
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=healthy_trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert "missing-secret-demo" in enriched.probable_cause

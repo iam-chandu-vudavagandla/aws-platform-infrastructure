@@ -255,6 +255,45 @@ def _diagnosis_mentions_readiness(
     return "readiness" in diagnosis_text
 
 
+def _trace_has_missing_secret(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported a missing Secret."""
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            message = str(
+                event.get("message", "")
+            ).lower()
+
+            if (
+                "secret" in message
+                and "not found" in message
+            ):
+                return True
+
+    return False
+
+
+def _diagnosis_mentions_missing_secret(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the missing-Secret failure."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    return (
+        "secret" in diagnosis_text
+        and "not found" in diagnosis_text
+    )
+
+
 def _trace_has_liveness_probe_failure(
     trace: list[ToolResult],
 ) -> bool:
@@ -378,6 +417,15 @@ def enrich_report_with_llm(
     if (
         _trace_has_readiness_probe_failure(trace)
         and not _diagnosis_mentions_readiness(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    if (
+        _trace_has_missing_secret(trace)
+        and not _diagnosis_mentions_missing_secret(
             diagnosis.summary,
             diagnosis.probable_cause,
         )
