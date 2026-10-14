@@ -25,7 +25,7 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:restart|delete|scale|patch|terminate|drain|cordon|uncordon|evict)\s+"
+        r"\b(?:restart|recreate|delete|scale|patch|terminate|drain|cordon|uncordon|evict)\s+"
         r"(?:the\s+)?"
         r"(?:pod|deployment|node|workload|service|statefulset|daemonset|container)\b",
         re.IGNORECASE,
@@ -44,6 +44,13 @@ UNSAFE_RECOMMENDATION_PATTERNS = (
         r"\bcreat(?:e|ing)\s+"
         r"(?:(?:a|an|the)\s+)?"
         r"(?:directory|file|resource|secret|configmap)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:configmap|secret)\b"
+        r".{0,120}"
+        r"\b(?:recreat(?:e|ing)|creat(?:e|ing))\s+"
+        r"(?:it|one|a\s+new\s+one)\b",
         re.IGNORECASE,
     ),
     re.compile(

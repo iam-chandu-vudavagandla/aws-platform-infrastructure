@@ -294,3 +294,50 @@ def test_diagnose_tool_trace_rejects_scheduling_remediation(
         match="unsafe recommendation",
     ):
         llm.diagnose_tool_trace(sample_trace())
+
+
+@pytest.mark.parametrize(
+    "recommended_action",
+    [
+        (
+            "If the configmap is missing, create it and ensure its "
+            "contents are correct."
+        ),
+        (
+            "If the configmap is missing, recreate it or create a "
+            "new one if necessary."
+        ),
+        (
+            "Investigate the missing configmap and recreate the "
+            "deployment to resolve the issue."
+        ),
+    ],
+)
+def test_diagnose_tool_trace_rejects_configmap_creation_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+    recommended_action: str,
+) -> None:
+    response = SimpleNamespace(
+        message=SimpleNamespace(
+            content=(
+                "{"
+                '"summary":"The container cannot start.",'
+                '"probable_cause":"The required ConfigMap is missing.",'
+                '"confidence":"high",'
+                f'"recommended_action":"{recommended_action}"'
+                "}"
+            )
+        )
+    )
+
+    monkeypatch.setattr(
+        llm.ollama,
+        "chat",
+        lambda **kwargs: response,
+    )
+
+    with pytest.raises(
+        llm.LLMError,
+        match="unsafe recommendation",
+    ):
+        llm.diagnose_tool_trace(sample_trace())
