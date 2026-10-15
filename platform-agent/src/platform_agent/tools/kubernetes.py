@@ -214,6 +214,8 @@ def get_pods(
             {
                 "name": metadata.get("name", "unknown"),
                 "phase": status.get("phase", "Unknown"),
+                "reason": status.get("reason"),
+                "message": status.get("message"),
                 "ready_containers": sum(
                     1
                     for container in container_statuses

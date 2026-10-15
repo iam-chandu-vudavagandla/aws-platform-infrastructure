@@ -1083,3 +1083,170 @@ def test_llm_missing_secret_mismatch_falls_back_to_deterministic_report(
     assert enriched.summary == report.summary
     assert enriched.probable_cause == report.probable_cause
     assert "missing-secret-demo" in enriched.probable_cause
+
+
+def test_evicted_terminated_pod_skips_log_collection(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["desired_replicas"] = 0
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 0
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["name"] = "eviction-demo-pod"
+    pod["phase"] = "Failed"
+    pod["ready_containers"] = 0
+    pod["total_containers"] = 1
+    pod["restarts"] = 1
+    pod["containers"] = [
+        {
+            "name": "busybox",
+            "ready": False,
+            "restart_count": 1,
+            "state": "terminated",
+            "state_reason": "ContainerStatusUnknown",
+            "last_state": "terminated",
+            "last_reason": "ContainerStatusUnknown",
+            "last_exit_code": 137,
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Evicted",
+            "message": (
+                "Pod ephemeral local storage usage exceeds "
+                "the total limit of containers 32Mi."
+            ),
+            "object_kind": "Pod",
+            "object_name": "eviction-demo-pod",
+        }
+    ]
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+        ]
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The pod was evicted.",
+            probable_cause=(
+                "Ephemeral local storage usage exceeded "
+                "the configured 32Mi limit."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Review ephemeral-storage usage and limits."
+            ),
+        ),
+    )
+
+    report = kubernetes_investigation.run_kubernetes_investigation(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    assert "get_pod_logs" not in [
+        name
+        for name, _ in calls
+    ]
+
+    assert report.confidence == Confidence.HIGH
+    assert report.errors == []
+
+
+def test_eviction_diagnosis_must_preserve_eviction_signal() -> None:
+    trace = [
+        ToolResult(
+            tool="get_events",
+            arguments={},
+            success=True,
+            data={
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "Evicted",
+                        "message": (
+                            "Pod ephemeral local storage usage exceeds "
+                            "the total limit of containers 32Mi."
+                        ),
+                        "object_kind": "Pod",
+                        "object_name": "eviction-demo-pod",
+                    }
+                ]
+            },
+            error=None,
+        )
+    ]
+
+    assert kubernetes_investigation._trace_has_eviction(trace) is True
+
+    assert (
+        kubernetes_investigation._diagnosis_preserves_eviction(
+            "The container exited with code 137.",
+            "ContainerStatusUnknown was reported.",
+        )
+        is False
+    )
+
+    assert (
+        kubernetes_investigation._diagnosis_preserves_eviction(
+            "The pod was evicted.",
+            (
+                "Ephemeral local storage usage exceeded "
+                "the configured container limit."
+            ),
+        )
+        is True
+    )
+
+
+def test_trace_has_eviction_from_pod_status() -> None:
+    trace = [
+        ToolResult(
+            tool="get_pods",
+            arguments={},
+            success=True,
+            data={
+                "pods": [
+                    {
+                        "name": "eviction-demo-pod",
+                        "phase": "Failed",
+                        "reason": "Evicted",
+                        "message": (
+                            "Pod ephemeral local storage usage exceeds "
+                            "the total limit of containers 32Mi."
+                        ),
+                    }
+                ]
+            },
+            error=None,
+        )
+    ]
+
+    assert kubernetes_investigation._trace_has_eviction(trace) is True

@@ -400,6 +400,56 @@ def _diagnosis_preserves_oomkilled(
     )
 
 
+def _trace_has_eviction(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported pod eviction."""
+
+    for result in trace:
+        if not result.success:
+            continue
+
+        if result.tool == "get_events":
+            for event in result.data.get("events", []):
+                reason = str(
+                    event.get("reason", "")
+                ).lower()
+
+                if reason == "evicted":
+                    return True
+
+        if result.tool == "get_pods":
+            for pod in result.data.get("pods", []):
+                reason = str(
+                    pod.get("reason", "")
+                ).lower()
+
+                if reason == "evicted":
+                    return True
+
+    return False
+
+
+def _diagnosis_preserves_eviction(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the eviction failure signal."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    return (
+        "evicted" in diagnosis_text
+        or "eviction" in diagnosis_text
+        or (
+            "ephemeral" in diagnosis_text
+            and "storage" in diagnosis_text
+        )
+    )
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -459,6 +509,15 @@ def enrich_report_with_llm(
     ):
         return report
 
+    if (
+        _trace_has_eviction(trace)
+        and not _diagnosis_preserves_eviction(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
     return report.model_copy(
         update={
             "summary": diagnosis.summary,
@@ -476,13 +535,17 @@ def _pod_has_loggable_container(
     containers = pod.get("containers", [])
 
     for container in containers:
-        if container.get("state") in {
-            "running",
-            "terminated",
-        }:
+        if container.get("state") == "running":
             return True
 
-        if container.get("last_state") == "terminated":
+        if (
+            container.get("last_state") == "terminated"
+            and container.get("last_reason")
+            not in {
+                None,
+                "ContainerStatusUnknown",
+            }
+        ):
             return True
 
     return False

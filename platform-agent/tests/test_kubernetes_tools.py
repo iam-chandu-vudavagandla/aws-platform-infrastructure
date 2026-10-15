@@ -536,3 +536,52 @@ def test_get_pods_bounds_large_pod_history(
 
     assert result["pods"][0]["name"] == "eviction-demo-119"
     assert result["pods"][-1]["name"] == "eviction-demo-070"
+
+
+def test_get_pods_preserves_pod_failure_reason_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "eviction-demo-pod",
+                },
+                "spec": {
+                    "nodeName": "worker-node-1",
+                },
+                "status": {
+                    "phase": "Failed",
+                    "reason": "Evicted",
+                    "message": (
+                        "Pod ephemeral local storage usage exceeds "
+                        "the total limit of containers 32Mi."
+                    ),
+                    "containerStatuses": [],
+                },
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        kubernetes.subprocess,
+        "run",
+        lambda *args, **kwargs: successful_result(payload),
+    )
+
+    result = kubernetes.get_pods(
+        "dev",
+        selector="app=eviction-demo",
+    )
+
+    pod = result["pods"][0]
+
+    assert pod["phase"] == "Failed"
+    assert pod["reason"] == "Evicted"
+    assert (
+        pod["message"]
+        == (
+            "Pod ephemeral local storage usage exceeds "
+            "the total limit of containers 32Mi."
+        )
+    )
