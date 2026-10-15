@@ -9,6 +9,7 @@ AWS_REGION = "ap-south-1"
 KUBERNETES_CONTEXT = "aws-platform-dev-new"
 DEFAULT_NAMESPACE = "dev"
 COMMAND_TIMEOUT_SECONDS = 20
+MAX_RETURNED_PODS = 50
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 LABEL_SELECTOR_PATTERN = re.compile(
@@ -124,9 +125,24 @@ def get_pods(
         )
 
     payload = run_kubectl(arguments)
+    items = payload.get("items", [])
+    total_pods = len(items)
+
+    if total_pods > MAX_RETURNED_PODS:
+        items = sorted(
+            items,
+            key=lambda item: (
+                item.get("metadata", {}).get(
+                    "creationTimestamp",
+                    "",
+                )
+            ),
+            reverse=True,
+        )[:MAX_RETURNED_PODS]
+
     pods = []
 
-    for item in payload.get("items", []):
+    for item in items:
         metadata = item.get("metadata", {})
         spec = item.get("spec", {})
         status = item.get("status", {})
@@ -218,7 +234,9 @@ def get_pods(
         "context": KUBERNETES_CONTEXT,
         "namespace": namespace,
         "selector": selector,
-        "count": len(pods),
+        "count": total_pods,
+        "returned_pods": len(pods),
+        "truncated": total_pods > len(pods),
         "pods": pods,
     }
 

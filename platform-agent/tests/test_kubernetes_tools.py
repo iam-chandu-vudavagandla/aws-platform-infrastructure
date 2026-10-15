@@ -57,6 +57,8 @@ def test_get_pods_returns_safe_summary(
 
     assert result["namespace"] == "dev"
     assert result["count"] == 1
+    assert result["returned_pods"] == 1
+    assert result["truncated"] is False
     assert result["pods"][0]["phase"] == "Running"
     assert result["pods"][0]["ready_containers"] == 1
     assert result["pods"][0]["restarts"] == 0
@@ -488,3 +490,49 @@ def test_get_pods_reports_container_failure_state(
     assert container["last_state"] == "terminated"
     assert container["last_reason"] == "Error"
     assert container["last_exit_code"] == 1
+
+
+def test_get_pods_bounds_large_pod_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    items = []
+
+    for index in range(120):
+        items.append(
+            {
+                "metadata": {
+                    "name": f"eviction-demo-{index:03d}",
+                    "creationTimestamp": (
+                        f"2026-10-14T"
+                        f"{index // 60:02d}:"
+                        f"{index % 60:02d}:00Z"
+                    ),
+                },
+                "spec": {
+                    "nodeName": "worker-node-1",
+                },
+                "status": {
+                    "phase": "Failed",
+                    "containerStatuses": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: {"items": items},
+    )
+
+    result = kubernetes.get_pods(
+        namespace="dev",
+        selector="app=eviction-demo",
+    )
+
+    assert result["count"] == 120
+    assert result["returned_pods"] == 50
+    assert result["truncated"] is True
+    assert len(result["pods"]) == 50
+
+    assert result["pods"][0]["name"] == "eviction-demo-119"
+    assert result["pods"][-1]["name"] == "eviction-demo-070"
