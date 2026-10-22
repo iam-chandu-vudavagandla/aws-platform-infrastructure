@@ -112,7 +112,16 @@ def create_kubernetes_report(
 
     relevant_object_names = {
         name,
-        *(pod.get("name") for pod in pod_items if isinstance(pod.get("name"), str)),
+        *(
+            pod.get("name")
+            for pod in pod_items
+            if isinstance(pod.get("name"), str)
+        ),
+        *(
+            pod.get("node")
+            for pod in pod_items
+            if isinstance(pod.get("node"), str)
+        ),
     }
 
     warning_events = [
@@ -181,6 +190,7 @@ def _incident_scoped_trace(
     )
 
     pod_names: set[str] = set()
+    node_names: set[str] = set()
 
     if pods_result is not None:
         pod_names = {
@@ -189,9 +199,16 @@ def _incident_scoped_trace(
             if isinstance(pod.get("name"), str)
         }
 
+        node_names = {
+            pod["node"]
+            for pod in pods_result.data.get("pods", [])
+            if isinstance(pod.get("node"), str)
+        }
+
     relevant_object_names = {
         name,
         *pod_names,
+        *node_names,
     }
 
     scoped_trace: list[ToolResult] = []
@@ -450,6 +467,99 @@ def _diagnosis_preserves_eviction(
     )
 
 
+def _trace_has_node_not_ready(
+    trace: list[ToolResult],
+) -> bool:
+    """Return whether Kubernetes explicitly reported NodeNotReady."""
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            reason = str(
+                event.get("reason", "")
+            ).lower()
+
+            message = str(
+                event.get("message", "")
+            ).lower()
+
+            if (
+                reason == "nodenotready"
+                or "node is not ready" in message
+                or "node not ready" in message
+            ):
+                return True
+
+    return False
+
+
+def _diagnosis_preserves_node_not_ready(
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the node-not-ready signal."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    compact_text = diagnosis_text.replace(" ", "")
+
+    return (
+        "nodenotready" in compact_text
+        or "node not ready" in diagnosis_text
+        or "node is not ready" in diagnosis_text
+        or "worker node is not ready" in diagnosis_text
+    )
+
+
+def _trace_node_pressure_reason(
+    trace: list[ToolResult],
+) -> str | None:
+    """Return the node pressure reason reported by Kubernetes."""
+
+    pressure_reasons = {
+        "memorypressure": "MemoryPressure",
+        "nodehasinsufficientmemory": "MemoryPressure",
+        "diskpressure": "DiskPressure",
+        "nodehasdiskpressure": "DiskPressure",
+        "pidpressure": "PIDPressure",
+        "nodehasinsufficientpid": "PIDPressure",
+    }
+
+    for result in trace:
+        if result.tool != "get_events" or not result.success:
+            continue
+
+        for event in result.data.get("events", []):
+            reason = str(
+                event.get("reason", "")
+            ).lower()
+
+            if reason in pressure_reasons:
+                return pressure_reasons[reason]
+
+    return None
+
+
+def _diagnosis_preserves_node_pressure(
+    pressure_reason: str,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves the specific pressure signal."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    compact_text = diagnosis_text.replace(" ", "")
+
+    return pressure_reason.lower() in compact_text
+
+
 def enrich_report_with_llm(
     report: IncidentReport,
     trace: list[ToolResult],
@@ -512,6 +622,27 @@ def enrich_report_with_llm(
     if (
         _trace_has_eviction(trace)
         and not _diagnosis_preserves_eviction(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    if (
+        _trace_has_node_not_ready(trace)
+        and not _diagnosis_preserves_node_not_ready(
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    node_pressure_reason = _trace_node_pressure_reason(trace)
+
+    if (
+        node_pressure_reason is not None
+        and not _diagnosis_preserves_node_pressure(
+            node_pressure_reason,
             diagnosis.summary,
             diagnosis.probable_cause,
         )

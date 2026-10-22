@@ -1250,3 +1250,456 @@ def test_trace_has_eviction_from_pod_status() -> None:
     ]
 
     assert kubernetes_investigation._trace_has_eviction(trace) is True
+
+
+def test_incident_scoped_trace_keeps_node_event_for_pod_node() -> None:
+    trace = [
+        ToolResult(
+            tool="get_pods",
+            arguments={},
+            success=True,
+            data={
+                "pods": [
+                    {
+                        "name": "app-123",
+                        "node": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        ),
+        ToolResult(
+            tool="get_events",
+            arguments={},
+            success=True,
+            data={
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "NodeNotReady",
+                        "message": "Node worker-node-1 is not ready.",
+                        "object_kind": "Node",
+                        "object_name": "worker-node-1",
+                    },
+                    {
+                        "type": "Warning",
+                        "reason": "FailedDeployModel",
+                        "message": "Unrelated ingress warning.",
+                        "object_kind": "Ingress",
+                        "object_name": "nginx-ingress",
+                    },
+                ],
+                "returned_events": 2,
+            },
+            error=None,
+        ),
+    ]
+
+    scoped = kubernetes_investigation._incident_scoped_trace(
+        name="aws-platform-app",
+        trace=trace,
+    )
+
+    events_result = next(
+        result
+        for result in scoped
+        if result.tool == "get_events"
+    )
+
+    events = events_result.data["events"]
+
+    assert len(events) == 1
+    assert events[0]["reason"] == "NodeNotReady"
+    assert events[0]["object_name"] == "worker-node-1"
+
+
+def test_deterministic_report_keeps_node_warning_for_pod_node() -> None:
+    trace = [
+        ToolResult(
+            tool="get_deployment",
+            arguments={},
+            success=True,
+            data={
+                "generation": 1,
+                "observed_generation": 1,
+                "desired_replicas": 1,
+                "ready_replicas": 0,
+                "unavailable_replicas": 1,
+            },
+            error=None,
+        ),
+        ToolResult(
+            tool="get_pods",
+            arguments={},
+            success=True,
+            data={
+                "pods": [
+                    {
+                        "name": "app-123",
+                        "phase": "Running",
+                        "ready_containers": 0,
+                        "total_containers": 1,
+                        "restarts": 0,
+                        "containers": [],
+                        "node": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        ),
+        ToolResult(
+            tool="get_events",
+            arguments={},
+            success=True,
+            data={
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "NodeNotReady",
+                        "message": "Node worker-node-1 is not ready.",
+                        "object_kind": "Node",
+                        "object_name": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        ),
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=trace,
+    )
+
+    assert "NodeNotReady" in report.probable_cause
+    assert "worker-node-1 is not ready" in report.probable_cause
+
+
+def test_node_not_ready_diagnosis_must_preserve_node_signal() -> None:
+    trace = [
+        ToolResult(
+            tool="get_events",
+            arguments={},
+            success=True,
+            data={
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "NodeNotReady",
+                        "message": "Node worker-node-1 is not ready.",
+                        "object_kind": "Node",
+                        "object_name": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        )
+    ]
+
+    assert (
+        kubernetes_investigation._trace_has_node_not_ready(trace)
+        is True
+    )
+
+    assert (
+        kubernetes_investigation._diagnosis_preserves_node_not_ready(
+            "The application container crashed.",
+            "The workload failed during startup.",
+        )
+        is False
+    )
+
+    assert (
+        kubernetes_investigation._diagnosis_preserves_node_not_ready(
+            "The workload is affected by a NodeNotReady condition.",
+            "The worker node is not ready.",
+        )
+        is True
+    )
+
+
+def test_node_pressure_diagnosis_must_preserve_pressure_signal() -> None:
+    for pressure_reason in (
+        "MemoryPressure",
+        "DiskPressure",
+        "PIDPressure",
+    ):
+        trace = [
+            ToolResult(
+                tool="get_events",
+                arguments={},
+                success=True,
+                data={
+                    "events": [
+                        {
+                            "type": "Warning",
+                            "reason": pressure_reason,
+                            "message": (
+                                f"Node worker-node-1 reports "
+                                f"{pressure_reason}."
+                            ),
+                            "object_kind": "Node",
+                            "object_name": "worker-node-1",
+                        }
+                    ]
+                },
+                error=None,
+            )
+        ]
+
+        assert (
+            kubernetes_investigation._trace_node_pressure_reason(
+                trace
+            )
+            == pressure_reason
+        )
+
+        assert (
+            kubernetes_investigation._diagnosis_preserves_node_pressure(
+                pressure_reason,
+                "The application container crashed.",
+                "The workload failed during startup.",
+            )
+            is False
+        )
+
+        assert (
+            kubernetes_investigation._diagnosis_preserves_node_pressure(
+                pressure_reason,
+                f"The node reports {pressure_reason}.",
+                "The problem originates from worker-node-1.",
+            )
+            is True
+        )
+
+
+def test_llm_node_failure_mismatch_falls_back_to_deterministic_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    trace = [
+        ToolResult(
+            tool="get_deployment",
+            arguments={},
+            success=True,
+            data={
+                "generation": 1,
+                "observed_generation": 1,
+                "desired_replicas": 1,
+                "ready_replicas": 0,
+                "unavailable_replicas": 1,
+            },
+            error=None,
+        ),
+        ToolResult(
+            tool="get_pods",
+            arguments={},
+            success=True,
+            data={
+                "pods": [
+                    {
+                        "name": "app-123",
+                        "phase": "Running",
+                        "ready_containers": 0,
+                        "total_containers": 1,
+                        "restarts": 0,
+                        "containers": [],
+                        "node": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        ),
+        ToolResult(
+            tool="get_events",
+            arguments={},
+            success=True,
+            data={
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "NodeNotReady",
+                        "message": "Node worker-node-1 is not ready.",
+                        "object_kind": "Node",
+                        "object_name": "worker-node-1",
+                    }
+                ]
+            },
+            error=None,
+        ),
+    ]
+
+    report = kubernetes_investigation.create_kubernetes_report(
+        name="aws-platform-app",
+        namespace="dev",
+        trace=trace,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application container crashed.",
+            probable_cause="The workload failed during startup.",
+            confidence=Confidence.HIGH,
+            recommended_action="Restart the application container.",
+        ),
+    )
+
+    enriched = kubernetes_investigation.enrich_report_with_llm(
+        report=report,
+        trace=trace,
+    )
+
+    assert enriched.summary == report.summary
+    assert enriched.probable_cause == report.probable_cause
+    assert "NodeNotReady" in enriched.probable_cause
+    assert "worker-node-1 is not ready" in enriched.probable_cause
+
+
+def test_node_pressure_recognizes_kubernetes_event_reasons() -> None:
+    cases = {
+        "NodeHasInsufficientMemory": "MemoryPressure",
+        "NodeHasDiskPressure": "DiskPressure",
+        "NodeHasInsufficientPID": "PIDPressure",
+    }
+
+    for event_reason, expected_pressure in cases.items():
+        trace = [
+            ToolResult(
+                tool="get_events",
+                arguments={},
+                success=True,
+                data={
+                    "events": [
+                        {
+                            "type": "Warning",
+                            "reason": event_reason,
+                            "message": (
+                                f"Node worker-node-1 reports "
+                                f"{event_reason}."
+                            ),
+                            "object_kind": "Node",
+                            "object_name": "worker-node-1",
+                        }
+                    ]
+                },
+                error=None,
+            )
+        ]
+
+        assert (
+            kubernetes_investigation._trace_node_pressure_reason(
+                trace
+            )
+            == expected_pressure
+        )
+def test_node_not_ready_investigation_runs_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        [
+            ToolResult(
+                tool="get_deployment",
+                arguments={},
+                success=True,
+                data={
+                    "selector": "app=aws-platform-app",
+                    "generation": 1,
+                    "observed_generation": 1,
+                    "desired_replicas": 1,
+                    "ready_replicas": 0,
+                    "unavailable_replicas": 1,
+                },
+                error=None,
+            ),
+            ToolResult(
+                tool="get_pods",
+                arguments={},
+                success=True,
+                data={
+                    "pods": [
+                        {
+                            "name": "app-123",
+                            "phase": "Running",
+                            "ready_containers": 0,
+                            "total_containers": 1,
+                            "restarts": 0,
+                            "containers": [],
+                            "node": "worker-node-1",
+                        }
+                    ]
+                },
+                error=None,
+            ),
+            ToolResult(
+                tool="get_events",
+                arguments={},
+                success=True,
+                data={
+                    "events": [
+                        {
+                            "type": "Warning",
+                            "reason": "NodeNotReady",
+                            "message": (
+                                "Node worker-node-1 is not ready."
+                            ),
+                            "object_kind": "Node",
+                            "object_name": "worker-node-1",
+                        }
+                    ]
+                },
+                error=None,
+            ),
+        ]
+    )
+
+    calls: list[str] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        result = next(results)
+
+        assert result.tool == name
+        calls.append(name)
+
+        return result.model_copy(
+            update={"arguments": arguments}
+        )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "enrich_report_with_llm",
+        lambda report, trace: report,
+    )
+
+    report = (
+        kubernetes_investigation
+        .run_kubernetes_investigation(
+            name="aws-platform-app",
+            namespace="dev",
+        )
+    )
+
+    assert calls == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+    ]
+    assert len(report.tool_trace) == 3
+    assert report.approval_required is True
+    assert report.errors == []
+    assert "NodeNotReady" in report.probable_cause
+    assert "worker-node-1 is not ready" in (
+        report.probable_cause
+    )
