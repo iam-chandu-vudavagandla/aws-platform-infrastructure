@@ -1,3 +1,4 @@
+import re
 from platform_agent.agent import evidence_from_trace
 from platform_agent.contracts import Confidence, IncidentReport, ToolResult
 from platform_agent.llm import LLMError, diagnose_tool_trace
@@ -37,6 +38,68 @@ def _find_result(
 ) -> ToolResult:
     return next(result for result in trace if result.tool == tool)
 
+DNS_LOOKUP_FAILURE_PATTERN = re.compile(
+    (
+        r"\blookup\s+"
+        r"(?P<target>[a-z0-9][a-z0-9._-]*)"
+        r".*?\b"
+        r"(?P<signal>no such host|nxdomain|servfail)\b"
+    ),
+    re.IGNORECASE,
+)
+
+
+def _trace_dns_resolution_failure(
+    trace: list[ToolResult],
+) -> tuple[str, str] | None:
+    """Return DNS target and failure signal from pod logs."""
+
+    for result in trace:
+        if (
+            result.tool != "get_pod_logs"
+            or not result.success
+        ):
+            continue
+
+        for line in result.data.get("logs", []):
+            if not isinstance(line, str):
+                continue
+
+            match = DNS_LOOKUP_FAILURE_PATTERN.search(
+                line
+            )
+
+            if match is not None:
+                return (
+                    match.group("target"),
+                    match.group("signal").lower(),
+                )
+
+    return None
+
+def _diagnosis_preserves_dns_resolution_failure(
+    dns_target: str,
+    dns_signal: str,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether the diagnosis preserves DNS evidence."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    preserves_dns_context = (
+        "dns" in diagnosis_text
+        or "name resolution" in diagnosis_text
+        or "lookup" in diagnosis_text
+    )
+
+    return (
+        preserves_dns_context
+        and dns_target.lower() in diagnosis_text
+        and dns_signal.lower() in diagnosis_text
+    )
 
 def create_kubernetes_report(
     name: str,
@@ -109,6 +172,18 @@ def create_kubernetes_report(
                     f"Container {container_name} in pod {pod_name} "
                     f"was OOMKilled with exit code {exit_code}."
                 )
+
+    dns_failure = _trace_dns_resolution_failure(
+        trace
+    )
+
+    if dns_failure is not None:
+        dns_target, dns_signal = dns_failure
+
+        findings.append(
+            "Pod logs report a DNS resolution failure "
+            f"for {dns_target}: {dns_signal}."
+        )
 
     relevant_object_names = {
         name,
@@ -648,6 +723,23 @@ def enrich_report_with_llm(
         )
     ):
         return report
+
+    dns_failure = _trace_dns_resolution_failure(
+        trace
+    )
+
+    if dns_failure is not None:
+        dns_target, dns_signal = dns_failure
+
+        if not (
+            _diagnosis_preserves_dns_resolution_failure(
+                dns_target,
+                dns_signal,
+                diagnosis.summary,
+                diagnosis.probable_cause,
+            )
+        ):
+            return report
 
     return report.model_copy(
         update={

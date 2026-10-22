@@ -1703,3 +1703,210 @@ def test_node_not_ready_investigation_runs_end_to_end(
     assert "worker-node-1 is not ready" in (
         report.probable_cause
     )
+
+def test_deterministic_report_preserves_dns_log_evidence(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 1
+    pod["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 1,
+            "state": "running",
+            "state_reason": None,
+            "last_state": None,
+            "last_reason": None,
+            "last_exit_code": None,
+        }
+    ]
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "dns" in diagnosis
+    assert (
+        "database.default.svc.cluster.local"
+        in diagnosis
+    )
+    assert "no such host" in diagnosis
+    assert report.approval_required is True
+
+def test_llm_dns_mismatch_falls_back_to_deterministic_report(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application is healthy.",
+            probable_cause=(
+                "No infrastructure problem was detected."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "No further investigation is required."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+
+    diagnosis = (
+        f"{enriched.summary} "
+        f"{enriched.probable_cause}"
+    ).lower()
+
+    assert "dns" in diagnosis
+    assert (
+        "database.default.svc.cluster.local"
+        in diagnosis
+    )
+    assert "no such host" in diagnosis
+
+def test_llm_dns_diagnosis_is_accepted_when_evidence_is_preserved(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    expected_summary = (
+        "The application has a DNS resolution failure."
+    )
+    expected_cause = (
+        "DNS lookup for "
+        "database.default.svc.cluster.local failed with "
+        "no such host."
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=expected_summary,
+            probable_cause=expected_cause,
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Verify the Kubernetes Service name and "
+                "cluster DNS configuration before making "
+                "a change."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == expected_summary
+    assert enriched.probable_cause == expected_cause
+    assert enriched.summary != report.summary
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.approval_required is True
