@@ -10,6 +10,7 @@ KUBERNETES_CONTEXT = "aws-platform-dev-new"
 DEFAULT_NAMESPACE = "dev"
 COMMAND_TIMEOUT_SECONDS = 20
 MAX_RETURNED_PODS = 50
+MAX_RETURNED_ENDPOINT_ADDRESSES = 100
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 LABEL_SELECTOR_PATTERN = re.compile(
@@ -499,4 +500,166 @@ def get_pod_logs(
         "line_count": len(lines),
         "truncated": truncated,
         "logs": lines,
+    }
+
+def get_service_endpoints(
+    service: str,
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized Service and EndpointSlice evidence."""
+
+    service = validate_dns_label(
+        service,
+        "service",
+    )
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    service_payload = run_kubectl(
+        [
+            "get",
+            "service",
+            service,
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    endpoint_slice_payload = run_kubectl(
+        [
+            "get",
+            "endpointslices",
+            "--namespace",
+            namespace,
+            "--selector",
+            (
+                "kubernetes.io/service-name="
+                f"{service}"
+            ),
+        ]
+    )
+
+    service_spec = service_payload.get(
+        "spec",
+        {},
+    )
+    raw_selector = service_spec.get(
+        "selector",
+        {},
+    )
+
+    selector = (
+        {
+            str(key): str(value)
+            for key, value in raw_selector.items()
+        }
+        if isinstance(raw_selector, dict)
+        else {}
+    )
+
+    ports: list[dict[str, Any]] = []
+
+    for port in service_spec.get("ports", []):
+        if not isinstance(port, dict):
+            continue
+
+        ports.append(
+            {
+                "name": port.get("name"),
+                "protocol": port.get(
+                    "protocol",
+                    "TCP",
+                ),
+                "port": port.get("port"),
+                "target_port": port.get(
+                    "targetPort"
+                ),
+            }
+        )
+
+    endpoint_slices = endpoint_slice_payload.get(
+        "items",
+        [],
+    )
+
+    ready_endpoint_count = 0
+    not_ready_endpoint_count = 0
+    ready_addresses: list[str] = []
+    not_ready_addresses: list[str] = []
+
+    for endpoint_slice in endpoint_slices:
+        if not isinstance(endpoint_slice, dict):
+            continue
+
+        for endpoint in endpoint_slice.get(
+            "endpoints",
+            [],
+        ):
+            if not isinstance(endpoint, dict):
+                continue
+
+            conditions = endpoint.get(
+                "conditions",
+                {},
+            )
+            ready = (
+                not isinstance(conditions, dict)
+                or conditions.get("ready") is not False
+            )
+
+            addresses = [
+                address
+                for address in endpoint.get(
+                    "addresses",
+                    [],
+                )
+                if isinstance(address, str)
+            ]
+
+            if ready:
+                ready_endpoint_count += 1
+
+                remaining = (
+                    MAX_RETURNED_ENDPOINT_ADDRESSES
+                    - len(ready_addresses)
+                )
+                ready_addresses.extend(
+                    addresses[:remaining]
+                )
+            else:
+                not_ready_endpoint_count += 1
+
+                remaining = (
+                    MAX_RETURNED_ENDPOINT_ADDRESSES
+                    - len(not_ready_addresses)
+                )
+                not_ready_addresses.extend(
+                    addresses[:remaining]
+                )
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "service": service,
+        "type": service_spec.get(
+            "type",
+            "ClusterIP",
+        ),
+        "selector": selector,
+        "ports": ports,
+        "endpoint_slice_count": len(
+            endpoint_slices
+        ),
+        "ready_endpoint_count": (
+            ready_endpoint_count
+        ),
+        "not_ready_endpoint_count": (
+            not_ready_endpoint_count
+        ),
+        "ready_addresses": ready_addresses,
+        "not_ready_addresses": (
+            not_ready_addresses
+        ),
     }

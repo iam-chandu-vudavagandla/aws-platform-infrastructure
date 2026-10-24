@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 from platform_agent.tools import kubernetes
-
+from platform_agent.tool_registry import execute_tool
 
 def successful_result(payload: dict) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
@@ -585,3 +585,200 @@ def test_get_pods_preserves_pod_failure_reason_and_message(
             "the total limit of containers 32Mi."
         )
     )
+
+def test_get_service_endpoints_returns_sanitized_network_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_payload = {
+        "metadata": {
+            "name": "aws-platform-app-service",
+        },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {
+                "app": "aws-platform-app",
+            },
+            "ports": [
+                {
+                    "name": "http",
+                    "protocol": "TCP",
+                    "port": 80,
+                    "targetPort": "http",
+                }
+            ],
+        },
+    }
+
+    endpoint_slice_payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": (
+                        "aws-platform-app-service-abc12"
+                    ),
+                },
+                "addressType": "IPv4",
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 8080,
+                    }
+                ],
+                "endpoints": [
+                    {
+                        "addresses": [
+                            "10.0.11.20",
+                        ],
+                        "conditions": {
+                            "ready": True,
+                        },
+                    },
+                    {
+                        "addresses": [
+                            "10.0.12.30",
+                        ],
+                        "conditions": {
+                            "ready": False,
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+    payloads = iter(
+        [
+            service_payload,
+            endpoint_slice_payload,
+        ]
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_kubectl(
+        arguments: list[str],
+    ) -> dict:
+        calls.append(arguments)
+        return next(payloads)
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        fake_run_kubectl,
+    )
+
+    result = kubernetes.get_service_endpoints(
+        service="aws-platform-app-service",
+        namespace="dev",
+    )
+
+    assert calls == [
+        [
+            "get",
+            "service",
+            "aws-platform-app-service",
+            "--namespace",
+            "dev",
+        ],
+        [
+            "get",
+            "endpointslices",
+            "--namespace",
+            "dev",
+            "--selector",
+            (
+                "kubernetes.io/service-name="
+                "aws-platform-app-service"
+            ),
+        ],
+    ]
+
+    assert result["service"] == (
+        "aws-platform-app-service"
+    )
+    assert result["type"] == "ClusterIP"
+    assert result["selector"] == {
+        "app": "aws-platform-app",
+    }
+    assert result["ports"] == [
+        {
+            "name": "http",
+            "protocol": "TCP",
+            "port": 80,
+            "target_port": "http",
+        }
+    ]
+    assert result["endpoint_slice_count"] == 1
+    assert result["ready_endpoint_count"] == 1
+    assert result["not_ready_endpoint_count"] == 1
+    assert result["ready_addresses"] == [
+        "10.0.11.20",
+    ]
+    assert result["not_ready_addresses"] == [
+        "10.0.12.30",
+    ]
+
+def test_get_service_endpoints_rejects_unsafe_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="valid Kubernetes DNS label",
+    ):
+        kubernetes.get_service_endpoints(
+            service="../production",
+            namespace="dev",
+        )
+
+
+def test_registry_allows_get_service_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = iter(
+        [
+            {
+                "metadata": {
+                    "name": "aws-platform-app-service",
+                },
+                "spec": {
+                    "type": "ClusterIP",
+                    "selector": {
+                        "app": "aws-platform-app",
+                    },
+                    "ports": [
+                        {
+                            "name": "http",
+                            "protocol": "TCP",
+                            "port": 80,
+                            "targetPort": "http",
+                        }
+                    ],
+                },
+            },
+            {
+                "items": [],
+            },
+        ]
+    )
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: next(payloads),
+    )
+
+    result = execute_tool(
+        "get_service_endpoints",
+        {
+            "service": (
+                "aws-platform-app-service"
+            ),
+            "namespace": "dev",
+        },
+    )
+
+    assert result.success is True
+    assert result.data["service"] == (
+        "aws-platform-app-service"
+    )
+    assert result.data[
+        "ready_endpoint_count"
+    ] == 0

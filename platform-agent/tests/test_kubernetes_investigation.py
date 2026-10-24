@@ -1910,3 +1910,569 @@ def test_llm_dns_diagnosis_is_accepted_when_evidence_is_preserved(
     assert enriched.summary != report.summary
     assert enriched.confidence == Confidence.HIGH
     assert enriched.approval_required is True
+
+def test_dns_failure_collects_service_endpoint_evidence(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 1
+    pod["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 1,
+            "state": "running",
+            "state_reason": None,
+            "last_state": None,
+            "last_reason": None,
+            "last_exit_code": None,
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": "Application dependency check failed.",
+            "object_name": "app-123",
+        }
+    ]
+
+    logs_result = tool_result(
+        "get_pod_logs",
+        {
+            "pod": "app-123",
+            "line_count": 1,
+            "truncated": False,
+            "logs": [
+                (
+                    "dial tcp: lookup "
+                    "database.default.svc.cluster.local "
+                    "on 10.100.0.10:53: no such host"
+                )
+            ],
+        },
+    )
+
+    service_result = tool_result(
+        "get_service_endpoints",
+        {
+            "service": "aws-platform-app-service",
+            "type": "ClusterIP",
+            "selector": {
+                "app": "aws-platform-app",
+            },
+            "ports": [
+                {
+                    "name": "http",
+                    "protocol": "TCP",
+                    "port": 80,
+                    "target_port": "http",
+                }
+            ],
+            "endpoint_slice_count": 0,
+            "ready_endpoint_count": 0,
+            "not_ready_endpoint_count": 0,
+            "ready_addresses": [],
+            "not_ready_addresses": [],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            logs_result,
+            service_result,
+        ]
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "enrich_report_with_llm",
+        lambda report, trace: report,
+    )
+
+    report = (
+        kubernetes_investigation
+        .run_kubernetes_investigation(
+            name="aws-platform-app",
+            namespace="dev",
+        )
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_pod_logs",
+        "get_service_endpoints",
+    ]
+
+    assert calls[4][1] == {
+        "service": "aws-platform-app-service",
+        "namespace": "dev",
+    }
+
+    assert len(report.tool_trace) == 5
+    assert report.tool_trace[-1].tool == (
+        "get_service_endpoints"
+    )
+
+def test_deterministic_report_detects_zero_ready_endpoints(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": (
+                    "aws-platform-app-service"
+                ),
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "aws-platform-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert (
+        "aws-platform-app-service"
+        in diagnosis
+    )
+    assert "zero ready endpoints" in diagnosis
+    assert report.approval_required is True
+    assert report.errors == []
+
+def test_llm_zero_endpoint_mismatch_falls_back(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": (
+                    "aws-platform-app-service"
+                ),
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "aws-platform-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary="The application is healthy.",
+            probable_cause=(
+                "The Service is routing traffic normally."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "No further investigation is required."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+
+    diagnosis = (
+        f"{enriched.summary} "
+        f"{enriched.probable_cause}"
+    ).lower()
+
+    assert (
+        "aws-platform-app-service"
+        in diagnosis
+    )
+    assert "zero ready endpoints" in diagnosis
+
+def test_llm_zero_endpoint_diagnosis_is_accepted(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": "aws-platform-app-service",
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "aws-platform-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = LLMDiagnosis(
+        summary=(
+            "Service aws-platform-app-service "
+            "has zero ready endpoints."
+        ),
+        probable_cause=(
+            "The Service selector currently produces "
+            "no ready endpoints for traffic."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Compare the Service selector with the "
+            "Deployment pod labels."
+        ),
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: diagnosis,
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == diagnosis.summary
+    assert (
+        enriched.probable_cause
+        == diagnosis.probable_cause
+    )
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.summary != report.summary
+    assert (
+        enriched.approval_required
+        == report.approval_required
+    )
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors
+
+def test_deterministic_report_detects_service_selector_mismatch(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": "aws-platform-app-service",
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "wrong-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "selector" in diagnosis
+    assert "app=aws-platform-app" in diagnosis
+    assert "app=wrong-app" in diagnosis
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+
+def test_llm_selector_mismatch_falls_back(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": "aws-platform-app-service",
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "wrong-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=(
+                "Service aws-platform-app-service "
+                "has zero ready endpoints."
+            ),
+            probable_cause=(
+                "The Service and Deployment selectors "
+                "match correctly, so the missing endpoints "
+                "are unrelated to selector configuration."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Investigate an unrelated application issue."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+    assert enriched.confidence == report.confidence
+    assert enriched.tool_trace == report.tool_trace
+
+def test_llm_selector_mismatch_diagnosis_is_accepted(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_service_endpoints",
+            {
+                "service": "aws-platform-app-service",
+                "type": "ClusterIP",
+                "selector": {
+                    "app": "wrong-app",
+                },
+                "ports": [
+                    {
+                        "name": "http",
+                        "protocol": "TCP",
+                        "port": 80,
+                        "target_port": "http",
+                    }
+                ],
+                "endpoint_slice_count": 0,
+                "ready_endpoint_count": 0,
+                "not_ready_endpoint_count": 0,
+                "ready_addresses": [],
+                "not_ready_addresses": [],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = LLMDiagnosis(
+        summary=(
+            "Service aws-platform-app-service has "
+            "zero ready endpoints because its selector "
+            "does not match the Deployment selector."
+        ),
+        probable_cause=(
+            "Service selector app=wrong-app differs "
+            "from Deployment selector "
+            "app=aws-platform-app."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Change the Service selector to "
+            "app=aws-platform-app after human review."
+        ),
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: diagnosis,
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == diagnosis.summary
+    assert (
+        enriched.probable_cause
+        == diagnosis.probable_cause
+    )
+    assert (
+        enriched.recommended_action
+        == diagnosis.recommended_action
+    )
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.summary != report.summary
+    assert (
+        enriched.approval_required
+        == report.approval_required
+    )
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors

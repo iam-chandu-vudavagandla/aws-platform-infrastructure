@@ -101,6 +101,267 @@ def _diagnosis_preserves_dns_resolution_failure(
         and dns_signal.lower() in diagnosis_text
     )
 
+def _trace_service_without_ready_endpoints(
+    trace: list[ToolResult],
+) -> str | None:
+    """Return the Service with zero ready endpoints."""
+
+    for result in trace:
+        if (
+            result.tool
+            != "get_service_endpoints"
+            or not result.success
+        ):
+            continue
+
+        ready_count = result.data.get(
+            "ready_endpoint_count"
+        )
+        service = result.data.get("service")
+
+        if (
+            isinstance(ready_count, int)
+            and not isinstance(ready_count, bool)
+            and ready_count == 0
+            and isinstance(service, str)
+            and service
+        ):
+            return service
+
+    return None
+
+def _selector_to_text(
+    selector: object,
+) -> str | None:
+    """Return a canonical selector string."""
+
+    if isinstance(selector, str):
+        labels = [
+            label.strip()
+            for label in selector.split(",")
+            if label.strip()
+        ]
+
+        if not labels:
+            return None
+
+        return ",".join(sorted(labels))
+
+    if isinstance(selector, dict):
+        labels = []
+
+        for key, value in selector.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, str)
+                or not value
+            ):
+                return None
+
+            labels.append(f"{key}={value}")
+
+        if not labels:
+            return None
+
+        return ",".join(sorted(labels))
+
+    return None
+
+
+def _trace_service_selector_mismatch(
+    trace: list[ToolResult],
+) -> tuple[str, str, str] | None:
+    """Return mismatched Deployment and Service selectors."""
+
+    deployment_selector = None
+
+    for result in trace:
+        if (
+            result.tool == "get_deployment"
+            and result.success
+        ):
+            deployment_selector = _selector_to_text(
+                result.data.get("selector")
+            )
+            break
+
+    if deployment_selector is None:
+        return None
+
+    for result in trace:
+        if (
+            result.tool != "get_service_endpoints"
+            or not result.success
+        ):
+            continue
+
+        service = result.data.get("service")
+        service_selector = _selector_to_text(
+            result.data.get("selector")
+        )
+
+        if (
+            isinstance(service, str)
+            and service
+            and service_selector is not None
+            and service_selector
+            != deployment_selector
+        ):
+            return (
+                service,
+                deployment_selector,
+                service_selector,
+            )
+
+    return None
+
+def _diagnosis_preserves_service_selector_mismatch(
+    service: str,
+    deployment_selector: str,
+    service_selector: str,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves selector mismatch."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    mismatch_signal_preserved = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "selector mismatch",
+            "selectors do not match",
+            "selector does not match",
+            "selectors differ",
+            "different selector",
+            "mismatched selector",
+        )
+    )
+
+    return (
+        service.lower() in diagnosis_text
+        and deployment_selector.lower()
+        in diagnosis_text
+        and service_selector.lower()
+        in diagnosis_text
+        and mismatch_signal_preserved
+    )
+
+def _selector_to_text(
+    selector: object,
+) -> str | None:
+    """Return a canonical selector string."""
+
+    if isinstance(selector, str):
+        labels = [
+            label.strip()
+            for label in selector.split(",")
+            if label.strip()
+        ]
+
+        if not labels:
+            return None
+
+        return ",".join(sorted(labels))
+
+    if isinstance(selector, dict):
+        labels = []
+
+        for key, value in selector.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, str)
+                or not value
+            ):
+                return None
+
+            labels.append(f"{key}={value}")
+
+        if not labels:
+            return None
+
+        return ",".join(sorted(labels))
+
+    return None
+
+
+def _trace_service_selector_mismatch(
+    trace: list[ToolResult],
+) -> tuple[str, str, str] | None:
+    """Return mismatched Deployment and Service selectors."""
+
+    deployment_selector = None
+
+    for result in trace:
+        if (
+            result.tool == "get_deployment"
+            and result.success
+        ):
+            deployment_selector = _selector_to_text(
+                result.data.get("selector")
+            )
+            break
+
+    if deployment_selector is None:
+        return None
+
+    for result in trace:
+        if (
+            result.tool != "get_service_endpoints"
+            or not result.success
+        ):
+            continue
+
+        service = result.data.get("service")
+        service_selector = _selector_to_text(
+            result.data.get("selector")
+        )
+
+        if (
+            isinstance(service, str)
+            and service
+            and service_selector is not None
+            and service_selector
+            != deployment_selector
+        ):
+            return (
+                service,
+                deployment_selector,
+                service_selector,
+            )
+
+    return None
+
+def _diagnosis_preserves_zero_endpoint_evidence(
+    service: str,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves zero endpoints."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    endpoint_signal_preserved = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "zero ready endpoints",
+            "no ready endpoints",
+            "has no endpoints",
+            "does not have ready endpoints",
+        )
+    )
+
+    return (
+        service.lower() in diagnosis_text
+        and endpoint_signal_preserved
+    )
+
 def create_kubernetes_report(
     name: str,
     namespace: str,
@@ -183,6 +444,37 @@ def create_kubernetes_report(
         findings.append(
             "Pod logs report a DNS resolution failure "
             f"for {dns_target}: {dns_signal}."
+        )
+
+    service_without_endpoints = (
+        _trace_service_without_ready_endpoints(
+            trace
+        )
+    )
+
+    if service_without_endpoints is not None:
+        findings.append(
+            f"Service {service_without_endpoints} "
+            "has zero ready endpoints."
+        )
+    selector_mismatch = (
+        _trace_service_selector_mismatch(
+            trace
+        )
+    )
+
+    if selector_mismatch is not None:
+        (
+            service,
+            deployment_selector,
+            service_selector,
+        ) = selector_mismatch
+
+        findings.append(
+            f"Service {service} selector "
+            f"{service_selector} does not match "
+            f"Deployment selector "
+            f"{deployment_selector}."
         )
 
     relevant_object_names = {
@@ -741,6 +1033,46 @@ def enrich_report_with_llm(
         ):
             return report
 
+    service_without_endpoints = (
+        _trace_service_without_ready_endpoints(
+            trace
+        )
+    )
+
+    if (
+        service_without_endpoints is not None
+        and not _diagnosis_preserves_zero_endpoint_evidence(
+            service_without_endpoints,
+            diagnosis.summary,
+            diagnosis.probable_cause,
+        )
+    ):
+        return report
+
+    selector_mismatch = (
+        _trace_service_selector_mismatch(
+            trace
+        )
+    )
+
+    if selector_mismatch is not None:
+        (
+            service,
+            deployment_selector,
+            service_selector,
+        ) = selector_mismatch
+
+        if not (
+            _diagnosis_preserves_service_selector_mismatch(
+                service=service,
+                deployment_selector=deployment_selector,
+                service_selector=service_selector,
+                summary=diagnosis.summary,
+                probable_cause=diagnosis.probable_cause,
+            )
+        ):
+            return report
+
     return report.model_copy(
         update={
             "summary": diagnosis.summary,
@@ -914,6 +1246,19 @@ def run_kubernetes_investigation(
             )
             trace.append(logs_result)
 
+    dns_failure = _trace_dns_resolution_failure(
+        trace
+    )
+
+    if dns_failure is not None:
+        service_result = execute_tool(
+            "get_service_endpoints",
+            {
+                "service": f"{name}-service",
+                "namespace": namespace,
+            },
+        )
+        trace.append(service_result)
 
     report = create_kubernetes_report(
         name=name,
