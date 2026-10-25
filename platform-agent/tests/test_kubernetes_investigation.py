@@ -2476,3 +2476,453 @@ def test_llm_selector_mismatch_diagnosis_is_accepted(
     )
     assert enriched.tool_trace == report.tool_trace
     assert enriched.errors == report.errors
+
+def test_dns_failure_with_ready_endpoints_collects_network_policies(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_trace[0].data["ready_replicas"] = 0
+    healthy_trace[0].data["unavailable_replicas"] = 1
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["ready_containers"] = 0
+    pod["restarts"] = 1
+    pod["containers"] = [
+        {
+            "name": "app",
+            "ready": False,
+            "restart_count": 1,
+            "state": "running",
+            "state_reason": None,
+            "last_state": None,
+            "last_reason": None,
+            "last_exit_code": None,
+        }
+    ]
+
+    healthy_trace[2].data["events"] = [
+        {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "message": (
+                "Application dependency check failed."
+            ),
+            "object_name": "app-123",
+        }
+    ]
+
+    logs_result = tool_result(
+        "get_pod_logs",
+        {
+            "pod": "app-123",
+            "line_count": 1,
+            "truncated": False,
+            "logs": [
+                (
+                    "dial tcp: lookup "
+                    "database.default.svc.cluster.local "
+                    "on 10.100.0.10:53: no such host"
+                )
+            ],
+        },
+    )
+
+    service_result = tool_result(
+        "get_service_endpoints",
+        {
+            "service": "aws-platform-app-service",
+            "type": "ClusterIP",
+            "selector": {
+                "app": "aws-platform-app",
+            },
+            "ports": [
+                {
+                    "name": "http",
+                    "protocol": "TCP",
+                    "port": 80,
+                    "target_port": "http",
+                }
+            ],
+            "endpoint_slice_count": 1,
+            "ready_endpoint_count": 1,
+            "not_ready_endpoint_count": 0,
+            "ready_addresses": [
+                "10.0.11.20",
+            ],
+            "not_ready_addresses": [],
+        },
+    )
+
+    policies_result = tool_result(
+        "get_network_policies",
+        {
+            "namespace": "dev",
+            "count": 1,
+            "returned_policies": 1,
+            "truncated": False,
+            "policies": [
+                {
+                    "name": "deny-app-egress",
+                    "pod_selector": {
+                        "app": "aws-platform-app",
+                    },
+                    "has_match_expressions": False,
+                    "policy_types": [
+                        "Egress",
+                    ],
+                    "ingress_rule_count": 0,
+                    "egress_rule_count": 0,
+                    "default_deny_ingress": False,
+                    "default_deny_egress": True,
+                }
+            ],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            logs_result,
+            service_result,
+            policies_result,
+        ]
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "enrich_report_with_llm",
+        lambda report, trace: report,
+    )
+
+    report = (
+        kubernetes_investigation
+        .run_kubernetes_investigation(
+            name="aws-platform-app",
+            namespace="dev",
+        )
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_pod_logs",
+        "get_service_endpoints",
+        "get_network_policies",
+    ]
+
+    assert calls[5][1] == {
+        "namespace": "dev",
+    }
+    assert report.tool_trace[-1].tool == (
+        "get_network_policies"
+    )
+def test_deterministic_report_detects_default_deny_egress_policy(
+    healthy_trace: list[ToolResult],
+) -> None:
+    pod = healthy_trace[1].data["pods"][0]
+    pod["labels"] = {
+        "app": "aws-platform-app",
+    }
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    healthy_trace.append(
+        tool_result(
+            "get_network_policies",
+            {
+                "namespace": "dev",
+                "count": 1,
+                "returned_policies": 1,
+                "truncated": False,
+                "policies": [
+                    {
+                        "name": "deny-app-egress",
+                        "pod_selector": {
+                            "app": "aws-platform-app",
+                        },
+                        "has_match_expressions": False,
+                        "policy_types": [
+                            "Egress",
+                        ],
+                        "ingress_rule_count": 0,
+                        "egress_rule_count": 0,
+                        "default_deny_ingress": False,
+                        "default_deny_egress": True,
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "deny-app-egress" in diagnosis
+    assert "app-123" in diagnosis
+    assert "default-deny egress" in diagnosis
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+
+def test_llm_default_deny_egress_mismatch_falls_back(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["labels"] = {
+        "app": "aws-platform-app",
+    }
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    healthy_trace.append(
+        tool_result(
+            "get_network_policies",
+            {
+                "namespace": "dev",
+                "count": 1,
+                "returned_policies": 1,
+                "truncated": False,
+                "policies": [
+                    {
+                        "name": "deny-app-egress",
+                        "pod_selector": {
+                            "app": "aws-platform-app",
+                        },
+                        "has_match_expressions": False,
+                        "policy_types": [
+                            "Egress",
+                        ],
+                        "ingress_rule_count": 0,
+                        "egress_rule_count": 0,
+                        "default_deny_ingress": False,
+                        "default_deny_egress": True,
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=(
+                "Pod app-123 has a DNS resolution "
+                "failure for "
+                "database.default.svc.cluster.local."
+            ),
+            probable_cause=(
+                "The lookup returned no such host, "
+                "but NetworkPolicy deny-app-egress "
+                "allows all egress traffic."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "Investigate an unrelated DNS problem."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+    assert enriched.confidence == report.confidence
+    assert enriched.tool_trace == report.tool_trace
+
+def test_llm_default_deny_egress_diagnosis_is_accepted(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    pod = healthy_trace[1].data["pods"][0]
+    pod["labels"] = {
+        "app": "aws-platform-app",
+    }
+
+    healthy_trace.append(
+        tool_result(
+            "get_pod_logs",
+            {
+                "pod": "app-123",
+                "line_count": 1,
+                "truncated": False,
+                "logs": [
+                    (
+                        "dial tcp: lookup "
+                        "database.default.svc.cluster.local "
+                        "on 10.100.0.10:53: no such host"
+                    )
+                ],
+            },
+        )
+    )
+
+    healthy_trace.append(
+        tool_result(
+            "get_network_policies",
+            {
+                "namespace": "dev",
+                "count": 1,
+                "returned_policies": 1,
+                "truncated": False,
+                "policies": [
+                    {
+                        "name": "deny-app-egress",
+                        "pod_selector": {
+                            "app": "aws-platform-app",
+                        },
+                        "has_match_expressions": False,
+                        "policy_types": [
+                            "Egress",
+                        ],
+                        "ingress_rule_count": 0,
+                        "egress_rule_count": 0,
+                        "default_deny_ingress": False,
+                        "default_deny_egress": True,
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = LLMDiagnosis(
+        summary=(
+            "NetworkPolicy deny-app-egress applies "
+            "default-deny egress to pod app-123."
+        ),
+        probable_cause=(
+            "The blocked egress causes a DNS "
+            "resolution failure for "
+            "database.default.svc.cluster.local "
+            "with no such host."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Review and approve a narrowly scoped "
+            "egress rule for DNS traffic."
+        ),
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: diagnosis,
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == diagnosis.summary
+    assert (
+        enriched.probable_cause
+        == diagnosis.probable_cause
+    )
+    assert (
+        enriched.recommended_action
+        == diagnosis.recommended_action
+    )
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.summary != report.summary
+    assert (
+        enriched.approval_required
+        == report.approval_required
+    )
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors

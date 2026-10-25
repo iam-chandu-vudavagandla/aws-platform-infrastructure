@@ -11,6 +11,8 @@ DEFAULT_NAMESPACE = "dev"
 COMMAND_TIMEOUT_SECONDS = 20
 MAX_RETURNED_PODS = 50
 MAX_RETURNED_ENDPOINT_ADDRESSES = 100
+MAX_RETURNED_POD_LABELS = 50
+MAX_RETURNED_NETWORK_POLICIES = 50
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 LABEL_SELECTOR_PATTERN = re.compile(
@@ -53,6 +55,29 @@ def validate_label_selector(selector: str) -> str:
 
     return selector
 
+def sanitize_labels(
+    labels: object,
+) -> dict[str, str]:
+    """Return a bounded dictionary of string labels."""
+
+    if not isinstance(labels, dict):
+        return {}
+
+    valid_labels = [
+        (key, value)
+        for key, value in labels.items()
+        if (
+            isinstance(key, str)
+            and key
+            and isinstance(value, str)
+        )
+    ]
+
+    return dict(
+        sorted(valid_labels)[
+            :MAX_RETURNED_POD_LABELS
+        ]
+    )
 
 def run_kubectl(arguments: list[str]) -> dict[str, Any]:
     """Execute a predefined read-only kubectl command."""
@@ -214,6 +239,9 @@ def get_pods(
         pods.append(
             {
                 "name": metadata.get("name", "unknown"),
+                "labels": sanitize_labels(
+                    metadata.get("labels")
+                ),
                 "phase": status.get("phase", "Unknown"),
                 "reason": status.get("reason"),
                 "message": status.get("message"),
@@ -662,4 +690,162 @@ def get_service_endpoints(
         "not_ready_addresses": (
             not_ready_addresses
         ),
+    }
+
+def get_network_policies(
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized NetworkPolicies in one namespace."""
+
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    payload = run_kubectl(
+        [
+            "get",
+            "networkpolicies",
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    items = payload.get("items", [])
+
+    if not isinstance(items, list):
+        raise TypeError(
+            "kubectl returned invalid NetworkPolicy items."
+        )
+
+    total_policies = len(items)
+
+    valid_items = [
+        item
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+    valid_items.sort(
+        key=lambda item: (
+            item.get("metadata", {}).get(
+                "name",
+                "",
+            )
+        )
+    )
+
+    policies = []
+
+    for item in valid_items[
+        :MAX_RETURNED_NETWORK_POLICIES
+    ]:
+        metadata = item.get("metadata", {})
+        spec = item.get("spec", {})
+
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if not isinstance(spec, dict):
+            spec = {}
+
+        pod_selector = spec.get(
+            "podSelector",
+            {},
+        )
+
+        if not isinstance(pod_selector, dict):
+            pod_selector = {}
+
+        match_labels = sanitize_labels(
+            pod_selector.get("matchLabels")
+        )
+
+        match_expressions = pod_selector.get(
+            "matchExpressions"
+        )
+
+        has_match_expressions = (
+            isinstance(match_expressions, list)
+            and bool(match_expressions)
+        )
+
+        raw_policy_types = spec.get(
+            "policyTypes"
+        )
+
+        if isinstance(raw_policy_types, list):
+            policy_types = [
+                policy_type
+                for policy_type in raw_policy_types
+                if policy_type
+                in {
+                    "Ingress",
+                    "Egress",
+                }
+            ]
+        else:
+            policy_types = [
+                "Ingress",
+            ]
+
+            if "egress" in spec:
+                policy_types.append("Egress")
+
+        ingress = spec.get("ingress", [])
+        egress = spec.get("egress", [])
+
+        ingress_rules = (
+            ingress
+            if isinstance(ingress, list)
+            else []
+        )
+        egress_rules = (
+            egress
+            if isinstance(egress, list)
+            else []
+        )
+
+        name = metadata.get(
+            "name",
+            "unknown",
+        )
+
+        if not isinstance(name, str) or not name:
+            name = "unknown"
+
+        policies.append(
+            {
+                "name": name,
+                "pod_selector": match_labels,
+                "has_match_expressions": (
+                    has_match_expressions
+                ),
+                "policy_types": policy_types,
+                "ingress_rule_count": len(
+                    ingress_rules
+                ),
+                "egress_rule_count": len(
+                    egress_rules
+                ),
+                "default_deny_ingress": (
+                    "Ingress" in policy_types
+                    and not ingress_rules
+                ),
+                "default_deny_egress": (
+                    "Egress" in policy_types
+                    and not egress_rules
+                ),
+            }
+        )
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "count": total_policies,
+        "returned_policies": len(policies),
+        "truncated": (
+            total_policies > len(policies)
+        ),
+        "policies": policies,
     }

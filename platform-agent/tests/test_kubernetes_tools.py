@@ -782,3 +782,146 @@ def test_registry_allows_get_service_endpoints(
     assert result.data[
         "ready_endpoint_count"
     ] == 0
+
+def test_get_pods_returns_sanitized_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "app-123",
+                    "labels": {
+                        "app": "aws-platform-app",
+                        "environment": "dev",
+                    },
+                },
+                "spec": {
+                    "nodeName": "worker-1",
+                },
+                "status": {
+                    "phase": "Running",
+                    "podIP": "10.0.11.20",
+                    "containerStatuses": [],
+                },
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: payload,
+    )
+
+    result = kubernetes.get_pods(
+        namespace="dev",
+        selector="app=aws-platform-app",
+    )
+
+    assert result["pods"][0]["labels"] == {
+        "app": "aws-platform-app",
+        "environment": "dev",
+    }
+
+def test_get_network_policies_returns_sanitized_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "deny-app-egress",
+                },
+                "spec": {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app": "aws-platform-app",
+                        },
+                    },
+                    "policyTypes": [
+                        "Egress",
+                    ],
+                    "egress": [],
+                },
+            }
+        ]
+    }
+
+    captured_arguments: list[str] = []
+
+    def fake_run_kubectl(
+        arguments: list[str],
+    ) -> dict:
+        captured_arguments.extend(arguments)
+        return payload
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        fake_run_kubectl,
+    )
+
+    result = kubernetes.get_network_policies(
+        namespace="dev",
+    )
+
+    assert captured_arguments == [
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "dev",
+    ]
+    assert result["namespace"] == "dev"
+    assert result["count"] == 1
+    assert result["returned_policies"] == 1
+    assert result["truncated"] is False
+    assert result["policies"] == [
+        {
+            "name": "deny-app-egress",
+            "pod_selector": {
+                "app": "aws-platform-app",
+            },
+            "has_match_expressions": False,
+            "policy_types": [
+                "Egress",
+            ],
+            "ingress_rule_count": 0,
+            "egress_rule_count": 0,
+            "default_deny_ingress": False,
+            "default_deny_egress": True,
+        }
+    ]
+
+def test_get_network_policies_rejects_unsafe_namespace() -> None:
+    with pytest.raises(
+        ValueError,
+        match="valid Kubernetes DNS label",
+    ):
+        kubernetes.get_network_policies(
+            namespace="--all-namespaces",
+        )
+
+def test_registry_allows_get_network_policies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: {
+            "items": [],
+        },
+    )
+
+    result = execute_tool(
+        "get_network_policies",
+        {
+            "namespace": "dev",
+        },
+    )
+
+    assert result.success is True
+    assert result.error is None
+    assert result.data["namespace"] == "dev"
+    assert result.data["count"] == 0
+    assert result.data["policies"] == []

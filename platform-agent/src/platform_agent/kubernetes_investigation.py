@@ -3,7 +3,7 @@ from platform_agent.agent import evidence_from_trace
 from platform_agent.contracts import Confidence, IncidentReport, ToolResult
 from platform_agent.llm import LLMError, diagnose_tool_trace
 from platform_agent.tool_registry import execute_tool
-
+from typing import Any
 
 def _failed_report(
     name: str,
@@ -76,6 +76,162 @@ def _trace_dns_resolution_failure(
                 )
 
     return None
+
+def _labels_match_selector(
+    labels: object,
+    selector: object,
+) -> bool:
+    """Return whether pod labels match a policy selector."""
+
+    if (
+        not isinstance(labels, dict)
+        or not isinstance(selector, dict)
+    ):
+        return False
+
+    if not selector:
+        # An empty NetworkPolicy podSelector selects
+        # every pod in the namespace.
+        return True
+
+    return all(
+        isinstance(key, str)
+        and isinstance(value, str)
+        and labels.get(key) == value
+        for key, value in selector.items()
+    )
+
+
+def _trace_default_deny_egress_policy(
+    trace: list[ToolResult],
+) -> tuple[str, str] | None:
+    """Return policy and pod affected by denied egress."""
+
+    if _trace_dns_resolution_failure(trace) is None:
+        return None
+
+    pods: list[dict[str, Any]] = []
+
+    for result in trace:
+        if (
+            result.tool != "get_pods"
+            or not result.success
+        ):
+            continue
+
+        result_pods = result.data.get(
+            "pods",
+            [],
+        )
+
+        if isinstance(result_pods, list):
+            pods.extend(
+                pod
+                for pod in result_pods
+                if isinstance(pod, dict)
+            )
+
+    for result in trace:
+        if (
+            result.tool != "get_network_policies"
+            or not result.success
+        ):
+            continue
+
+        policies = result.data.get(
+            "policies",
+            [],
+        )
+
+        if not isinstance(policies, list):
+            continue
+
+        for policy in policies:
+            if (
+                not isinstance(policy, dict)
+                or policy.get(
+                    "default_deny_egress"
+                )
+                is not True
+                or policy.get(
+                    "has_match_expressions"
+                )
+                is True
+            ):
+                continue
+
+            policy_name = policy.get("name")
+            selector = policy.get(
+                "pod_selector"
+            )
+
+            if (
+                not isinstance(policy_name, str)
+                or not policy_name
+            ):
+                continue
+
+            for pod in pods:
+                pod_name = pod.get("name")
+                pod_labels = pod.get("labels")
+
+                if (
+                    isinstance(pod_name, str)
+                    and pod_name
+                    and _labels_match_selector(
+                        pod_labels,
+                        selector,
+                    )
+                ):
+                    return (
+                        policy_name,
+                        pod_name,
+                    )
+
+    return None
+
+def _diagnosis_preserves_default_deny_egress(
+    policy_name: str,
+    pod_name: str,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves denied egress."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    deny_signal_preserved = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "default-deny egress",
+            "default deny egress",
+            "denies all egress",
+            "blocks all egress",
+            "egress is denied",
+            "egress traffic is denied",
+            "egress is blocked",
+        )
+    )
+
+    contradictory_allow_claim = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "allows all egress",
+            "allows egress traffic",
+            "egress is allowed",
+            "does not block egress",
+            "does not deny egress",
+        )
+    )
+
+    return (
+        policy_name.lower() in diagnosis_text
+        and pod_name.lower() in diagnosis_text
+        and deny_signal_preserved
+        and not contradictory_allow_claim
+    )
 
 def _diagnosis_preserves_dns_resolution_failure(
     dns_target: str,
@@ -437,6 +593,23 @@ def create_kubernetes_report(
     dns_failure = _trace_dns_resolution_failure(
         trace
     )
+    default_deny_egress = (
+        _trace_default_deny_egress_policy(
+            trace
+        )
+    )
+
+    if default_deny_egress is not None:
+        policy_name, pod_name = (
+            default_deny_egress
+        )
+
+        findings.append(
+            f"NetworkPolicy {policy_name} selects "
+            f"pod {pod_name} and applies "
+            "default-deny egress during a DNS "
+            "resolution failure."
+        )
 
     if dns_failure is not None:
         dns_target, dns_signal = dns_failure
@@ -538,8 +711,6 @@ def create_kubernetes_report(
         tool_trace=trace,
         errors=[],
     )
-
-
 
 def _incident_scoped_trace(
     name: str,
@@ -1073,6 +1244,27 @@ def enrich_report_with_llm(
         ):
             return report
 
+    default_deny_egress = (
+        _trace_default_deny_egress_policy(
+            trace
+        )
+    )
+
+    if default_deny_egress is not None:
+        policy_name, pod_name = (
+            default_deny_egress
+        )
+
+        if not (
+            _diagnosis_preserves_default_deny_egress(
+                policy_name=policy_name,
+                pod_name=pod_name,
+                summary=diagnosis.summary,
+                probable_cause=diagnosis.probable_cause,
+            )
+        ):
+            return report
+
     return report.model_copy(
         update={
             "summary": diagnosis.summary,
@@ -1259,6 +1451,33 @@ def run_kubernetes_investigation(
             },
         )
         trace.append(service_result)
+        ready_endpoint_count = (
+            service_result.data.get(
+                "ready_endpoint_count"
+            )
+        )
+
+        service_has_ready_endpoints = (
+            service_result.success
+            and isinstance(
+                ready_endpoint_count,
+                int,
+            )
+            and not isinstance(
+                ready_endpoint_count,
+                bool,
+            )
+            and ready_endpoint_count > 0
+        )
+
+        if service_has_ready_endpoints:
+            policies_result = execute_tool(
+                "get_network_policies",
+                {
+                    "namespace": namespace,
+                },
+            )
+            trace.append(policies_result)
 
     report = create_kubernetes_report(
         name=name,
