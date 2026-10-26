@@ -150,6 +150,20 @@ the explicit Python allowlist.
 - No automatic remediation
 - Human approval required for recommended changes
 
+## Continuous integration
+
+The GitHub Actions `Python validation` job installs the application and
+reliability-agent dependencies, then runs:
+
+1. Application tests
+2. All reliability-agent tests
+3. `python -m pip check`
+4. All committed offline incident evaluations
+
+The evaluation gate runs without AWS credentials, Kubernetes access or
+Ollama. A failed test, broken dependency or failed evaluation blocks the
+workflow.
+
 ## Development
 
 ```bash

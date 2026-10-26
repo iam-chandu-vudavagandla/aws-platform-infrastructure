@@ -130,6 +130,13 @@ jobs:
         working-directory: platform-agent
         run: python -m pytest
 
+      - name: Check Python dependencies
+        run: python -m pip check
+
+      - name: Run offline reliability-agent evaluations
+        working-directory: platform-agent
+        run: platform-agent evaluate evals/fixtures
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
