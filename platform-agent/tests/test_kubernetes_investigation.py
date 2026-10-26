@@ -2926,3 +2926,721 @@ def test_llm_default_deny_egress_diagnosis_is_accepted(
     )
     assert enriched.tool_trace == report.tool_trace
     assert enriched.errors == report.errors
+
+def test_hpa_investigation_collects_autoscaler_evidence(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hpa_result = tool_result(
+        "get_hpa",
+        {
+            "name": "aws-platform-app-hpa",
+            "target": {
+                "kind": "Deployment",
+                "name": "aws-platform-app",
+            },
+            "min_replicas": 2,
+            "max_replicas": 5,
+            "current_replicas": 2,
+            "desired_replicas": 2,
+            "target_cpu_utilization": 50,
+            "current_cpu_utilization": None,
+            "conditions": [
+                {
+                    "type": "ScalingActive",
+                    "status": "False",
+                    "reason": (
+                        "FailedGetResourceMetric"
+                    ),
+                    "message": (
+                        "No metrics returned from "
+                        "resource metrics API."
+                    ),
+                    "last_transition_time": (
+                        "2026-10-26T05:00:00Z"
+                    ),
+                }
+            ],
+        },
+    )
+
+    results = iter(
+        [
+            healthy_trace[0],
+            healthy_trace[1],
+            healthy_trace[2],
+            hpa_result,
+        ]
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_execute(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        calls.append((name, arguments))
+        return next(results)
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "execute_tool",
+        fake_execute,
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "enrich_report_with_llm",
+        lambda report, trace: report,
+    )
+
+    report = (
+        kubernetes_investigation
+        .run_kubernetes_investigation(
+            name="aws-platform-app",
+            namespace="dev",
+            hpa_name="aws-platform-app-hpa",
+        )
+    )
+
+    assert [name for name, _ in calls] == [
+        "get_deployment",
+        "get_pods",
+        "get_events",
+        "get_hpa",
+    ]
+
+    assert calls[3][1] == {
+        "name": "aws-platform-app-hpa",
+        "namespace": "dev",
+    }
+    assert report.tool_trace[-1].tool == "get_hpa"
+
+def test_deterministic_report_diagnoses_hpa_metrics_api_failure(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace[0].data["containers"] = [
+        {
+            "name": "app",
+            "image": "example/app:1.0",
+            "cpu_request": "250m",
+            "memory_request": "256Mi",
+            "cpu_limit": "500m",
+            "memory_limit": "512Mi",
+        }
+    ]
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 2,
+                "desired_replicas": 2,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": None,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "False",
+                        "reason": (
+                            "FailedGetResourceMetric"
+                        ),
+                        "message": (
+                            "No metrics returned from "
+                            "resource metrics API."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "aws-platform-app-hpa" in diagnosis
+    assert "failedgetresourcemetric" in diagnosis
+    assert "resource metrics api" in diagnosis
+    assert "cpu requests are present" in diagnosis
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+
+def test_deterministic_report_detects_missing_cpu_request(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace[0].data["containers"] = [
+        {
+            "name": "app",
+            "image": "example/app:1.0",
+            "cpu_request": None,
+            "memory_request": "256Mi",
+            "cpu_limit": "500m",
+            "memory_limit": "512Mi",
+        }
+    ]
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 2,
+                "desired_replicas": 2,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": None,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "False",
+                        "reason": (
+                            "FailedGetResourceMetric"
+                        ),
+                        "message": (
+                            "Missing request for cpu "
+                            "in container app."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "aws-platform-app-hpa" in diagnosis
+    assert "failedgetresourcemetric" in diagnosis
+    assert "missing cpu requests" in diagnosis
+    assert "app" in diagnosis
+    assert (
+        "even though deployment cpu requests "
+        "are present"
+        not in diagnosis
+    )
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+
+def test_deterministic_report_detects_hpa_max_replica_limit(
+    healthy_trace: list[ToolResult],
+) -> None:
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 5,
+                "desired_replicas": 5,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": 92,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "True",
+                        "reason": "ValidMetricFound",
+                        "message": (
+                            "The HPA successfully calculated "
+                            "a replica count from CPU metrics."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    },
+                    {
+                        "type": "ScalingLimited",
+                        "status": "True",
+                        "reason": "TooManyReplicas",
+                        "message": (
+                            "The desired replica count is "
+                            "greater than the maximum "
+                            "replica count."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:01:00Z"
+                        ),
+                    },
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = (
+        f"{report.summary} "
+        f"{report.probable_cause}"
+    ).lower()
+
+    assert "aws-platform-app-hpa" in diagnosis
+    assert "toomanyreplicas" in diagnosis
+    assert "maximum of 5 replicas" in diagnosis
+    assert "92%" in diagnosis
+    assert "target 50%" in diagnosis
+    assert report.confidence == Confidence.HIGH
+    assert report.approval_required is True
+
+def test_llm_hpa_metric_failure_mismatch_falls_back(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["containers"] = [
+        {
+            "name": "app",
+            "image": "example/app:1.0",
+            "cpu_request": "250m",
+            "memory_request": "256Mi",
+            "cpu_limit": "500m",
+            "memory_limit": "512Mi",
+        }
+    ]
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 2,
+                "desired_replicas": 2,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": None,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "False",
+                        "reason": (
+                            "FailedGetResourceMetric"
+                        ),
+                        "message": (
+                            "No metrics returned from "
+                            "resource metrics API."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=(
+                "HPA aws-platform-app-hpa is healthy "
+                "and scaling normally."
+            ),
+            probable_cause=(
+                "CPU requests are present and the "
+                "resource metrics API is available; "
+                "no FailedGetResourceMetric condition "
+                "exists."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "No further investigation is required."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+    assert enriched.confidence == report.confidence
+    assert enriched.tool_trace == report.tool_trace
+
+def test_llm_hpa_metric_failure_diagnosis_is_accepted(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace[0].data["containers"] = [
+        {
+            "name": "app",
+            "image": "example/app:1.0",
+            "cpu_request": "250m",
+            "memory_request": "256Mi",
+            "cpu_limit": "500m",
+            "memory_limit": "512Mi",
+        }
+    ]
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 2,
+                "desired_replicas": 2,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": None,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "False",
+                        "reason": (
+                            "FailedGetResourceMetric"
+                        ),
+                        "message": (
+                            "No metrics returned from "
+                            "resource metrics API."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    }
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = LLMDiagnosis(
+        summary=(
+            "HPA aws-platform-app-hpa reports "
+            "FailedGetResourceMetric."
+        ),
+        probable_cause=(
+            "The resource metrics API is unavailable "
+            "even though Deployment CPU requests "
+            "are present."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Check Metrics Server availability, logs, "
+            "and metrics.k8s.io API registration."
+        ),
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: diagnosis,
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == diagnosis.summary
+    assert (
+        enriched.probable_cause
+        == diagnosis.probable_cause
+    )
+    assert (
+        enriched.recommended_action
+        == diagnosis.recommended_action
+    )
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.summary != report.summary
+    assert (
+        enriched.approval_required
+        == report.approval_required
+    )
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors
+
+def test_llm_hpa_scaling_limit_mismatch_falls_back(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 5,
+                "desired_replicas": 5,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": 92,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "True",
+                        "reason": "ValidMetricFound",
+                        "message": (
+                            "A replica count was calculated."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    },
+                    {
+                        "type": "ScalingLimited",
+                        "status": "True",
+                        "reason": "TooManyReplicas",
+                        "message": (
+                            "The desired replica count is "
+                            "greater than the maximum."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:01:00Z"
+                        ),
+                    },
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: LLMDiagnosis(
+            summary=(
+                "HPA aws-platform-app-hpa is not "
+                "limited and can continue scaling."
+            ),
+            probable_cause=(
+                "TooManyReplicas is not active. The "
+                "HPA has not reached its maximum of "
+                "5 replicas, and CPU at 92% is below "
+                "the target 50%."
+            ),
+            confidence=Confidence.HIGH,
+            recommended_action=(
+                "No scaling change is required."
+            ),
+        ),
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == report.summary
+    assert (
+        enriched.probable_cause
+        == report.probable_cause
+    )
+    assert enriched.confidence == report.confidence
+    assert enriched.tool_trace == report.tool_trace
+
+def test_llm_hpa_scaling_limit_diagnosis_is_accepted(
+    healthy_trace: list[ToolResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    healthy_trace.append(
+        tool_result(
+            "get_hpa",
+            {
+                "name": "aws-platform-app-hpa",
+                "target": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "min_replicas": 2,
+                "max_replicas": 5,
+                "current_replicas": 5,
+                "desired_replicas": 5,
+                "target_cpu_utilization": 50,
+                "current_cpu_utilization": 92,
+                "conditions": [
+                    {
+                        "type": "ScalingActive",
+                        "status": "True",
+                        "reason": "ValidMetricFound",
+                        "message": (
+                            "A replica count was calculated."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:00:00Z"
+                        ),
+                    },
+                    {
+                        "type": "ScalingLimited",
+                        "status": "True",
+                        "reason": "TooManyReplicas",
+                        "message": (
+                            "The desired replica count is "
+                            "greater than the maximum."
+                        ),
+                        "last_transition_time": (
+                            "2026-10-26T05:01:00Z"
+                        ),
+                    },
+                ],
+            },
+        )
+    )
+
+    report = (
+        kubernetes_investigation
+        .create_kubernetes_report(
+            name="aws-platform-app",
+            namespace="dev",
+            trace=healthy_trace,
+        )
+    )
+
+    diagnosis = LLMDiagnosis(
+        summary=(
+            "HPA aws-platform-app-hpa reports "
+            "TooManyReplicas and is scaling limited."
+        ),
+        probable_cause=(
+            "The HPA is limited at its maximum of "
+            "5 replicas while CPU utilization at "
+            "92% is above target 50%."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Review workload capacity and approve an "
+            "increase to maxReplicas if the cluster "
+            "has sufficient resources."
+        ),
+    )
+
+    monkeypatch.setattr(
+        kubernetes_investigation,
+        "diagnose_tool_trace",
+        lambda trace: diagnosis,
+    )
+
+    enriched = (
+        kubernetes_investigation
+        .enrich_report_with_llm(
+            report=report,
+            trace=healthy_trace,
+        )
+    )
+
+    assert enriched.summary == diagnosis.summary
+    assert (
+        enriched.probable_cause
+        == diagnosis.probable_cause
+    )
+    assert (
+        enriched.recommended_action
+        == diagnosis.recommended_action
+    )
+    assert enriched.confidence == Confidence.HIGH
+    assert enriched.summary != report.summary
+    assert (
+        enriched.approval_required
+        == report.approval_required
+    )
+    assert enriched.tool_trace == report.tool_trace
+    assert enriched.errors == report.errors

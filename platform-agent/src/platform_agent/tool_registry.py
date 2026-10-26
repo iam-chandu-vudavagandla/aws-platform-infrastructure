@@ -5,6 +5,7 @@ from platform_agent.contracts import ToolResult
 from platform_agent.tools.kubernetes import (
     get_deployment,
     get_events,
+    get_hpa,
     get_network_policies,
     get_pod_logs,
     get_pods,
@@ -27,6 +28,7 @@ TOOLS: dict[str, ToolFunction] = {
     "get_pod_logs": get_pod_logs,
     "get_service_endpoints": get_service_endpoints,
     "get_network_policies": get_network_policies,
+    "get_hpa": get_hpa,
 }
 
 

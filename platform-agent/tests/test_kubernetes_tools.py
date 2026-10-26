@@ -925,3 +925,227 @@ def test_registry_allows_get_network_policies(
     assert result.data["namespace"] == "dev"
     assert result.data["count"] == 0
     assert result.data["policies"] == []
+
+def test_get_deployment_returns_container_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "metadata": {
+            "name": "aws-platform-app",
+            "generation": 1,
+        },
+        "spec": {
+            "replicas": 2,
+            "selector": {
+                "matchLabels": {
+                    "app": "aws-platform-app",
+                },
+            },
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "app",
+                            "image": "example/app:1.0",
+                            "resources": {
+                                "requests": {
+                                    "cpu": "250m",
+                                    "memory": "256Mi",
+                                },
+                                "limits": {
+                                    "cpu": "500m",
+                                    "memory": "512Mi",
+                                },
+                            },
+                        }
+                    ],
+                }
+            },
+        },
+        "status": {
+            "observedGeneration": 1,
+            "replicas": 2,
+            "updatedReplicas": 2,
+            "readyReplicas": 2,
+            "availableReplicas": 2,
+            "unavailableReplicas": 0,
+            "conditions": [],
+        },
+    }
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: payload,
+    )
+
+    result = kubernetes.get_deployment(
+        name="aws-platform-app",
+        namespace="dev",
+    )
+
+    container = result["containers"][0]
+
+    assert container["cpu_request"] == "250m"
+    assert container["memory_request"] == "256Mi"
+    assert container["cpu_limit"] == "500m"
+    assert container["memory_limit"] == "512Mi"
+
+def test_get_hpa_returns_sanitized_scaling_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "metadata": {
+            "name": "aws-platform-app-hpa",
+        },
+        "spec": {
+            "scaleTargetRef": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "name": "aws-platform-app",
+            },
+            "minReplicas": 2,
+            "maxReplicas": 5,
+            "metrics": [
+                {
+                    "type": "Resource",
+                    "resource": {
+                        "name": "cpu",
+                        "target": {
+                            "type": "Utilization",
+                            "averageUtilization": 50,
+                        },
+                    },
+                }
+            ],
+        },
+        "status": {
+            "currentReplicas": 2,
+            "desiredReplicas": 2,
+            "currentMetrics": [],
+            "conditions": [
+                {
+                    "type": "ScalingActive",
+                    "status": "False",
+                    "reason": "FailedGetResourceMetric",
+                    "message": (
+                        "Unable to compute the replica count: "
+                        "no metrics returned from resource "
+                        "metrics API."
+                    ),
+                    "lastTransitionTime": (
+                        "2026-10-25T05:00:00Z"
+                    ),
+                }
+            ],
+        },
+    }
+
+    captured_arguments: list[str] = []
+
+    def fake_run_kubectl(
+        arguments: list[str],
+    ) -> dict:
+        captured_arguments.extend(arguments)
+        return payload
+
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        fake_run_kubectl,
+    )
+
+    result = kubernetes.get_hpa(
+        name="aws-platform-app-hpa",
+        namespace="dev",
+    )
+
+    assert captured_arguments == [
+        "get",
+        "hpa",
+        "aws-platform-app-hpa",
+        "--namespace",
+        "dev",
+    ]
+    assert result["name"] == "aws-platform-app-hpa"
+    assert result["target"] == {
+        "kind": "Deployment",
+        "name": "aws-platform-app",
+    }
+    assert result["min_replicas"] == 2
+    assert result["max_replicas"] == 5
+    assert result["current_replicas"] == 2
+    assert result["desired_replicas"] == 2
+    assert result["target_cpu_utilization"] == 50
+    assert result["current_cpu_utilization"] is None
+    assert result["conditions"] == [
+        {
+            "type": "ScalingActive",
+            "status": "False",
+            "reason": "FailedGetResourceMetric",
+            "message": (
+                "Unable to compute the replica count: "
+                "no metrics returned from resource "
+                "metrics API."
+            ),
+            "last_transition_time": (
+                "2026-10-25T05:00:00Z"
+            ),
+        }
+    ]
+
+def test_get_hpa_rejects_unsafe_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="valid Kubernetes DNS label",
+    ):
+        kubernetes.get_hpa(
+            name="--all-namespaces",
+            namespace="dev",
+        )
+
+
+def test_registry_allows_get_hpa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        kubernetes,
+        "run_kubectl",
+        lambda arguments: {
+            "metadata": {
+                "name": "aws-platform-app-hpa",
+            },
+            "spec": {
+                "scaleTargetRef": {
+                    "kind": "Deployment",
+                    "name": "aws-platform-app",
+                },
+                "minReplicas": 2,
+                "maxReplicas": 5,
+                "metrics": [],
+            },
+            "status": {
+                "currentReplicas": 2,
+                "desiredReplicas": 2,
+                "currentMetrics": [],
+                "conditions": [],
+            },
+        },
+    )
+
+    result = execute_tool(
+        "get_hpa",
+        {
+            "name": "aws-platform-app-hpa",
+            "namespace": "dev",
+        },
+    )
+
+    assert result.success is True
+    assert result.error is None
+    assert result.data["name"] == (
+        "aws-platform-app-hpa"
+    )
+    assert result.data["target"]["name"] == (
+        "aws-platform-app"
+    )

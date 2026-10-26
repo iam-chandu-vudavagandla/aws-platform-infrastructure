@@ -79,6 +79,43 @@ def sanitize_labels(
         ]
     )
 
+def container_resource_value(
+    container: dict[str, Any],
+    category: str,
+    resource: str,
+) -> str | None:
+    """Return one sanitized container resource value."""
+
+    resources = container.get("resources")
+
+    if not isinstance(resources, dict):
+        return None
+
+    category_values = resources.get(category)
+
+    if not isinstance(category_values, dict):
+        return None
+
+    value = category_values.get(resource)
+
+    if not isinstance(value, str) or not value:
+        return None
+
+    return value
+
+def integer_or_none(
+    value: object,
+) -> int | None:
+    """Return an integer while rejecting booleans."""
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+    ):
+        return value
+
+    return None
+
 def run_kubectl(arguments: list[str]) -> dict[str, Any]:
     """Execute a predefined read-only kubectl command."""
 
@@ -307,8 +344,34 @@ def get_deployment(
 
     containers = [
         {
-            "name": container.get("name", "unknown"),
-            "image": container.get("image", "unknown"),
+            "name": container.get(
+                "name",
+                "unknown",
+            ),
+            "image": container.get(
+                "image",
+                "unknown",
+            ),
+            "cpu_request": container_resource_value(
+                container,
+                "requests",
+                "cpu",
+            ),
+            "memory_request": container_resource_value(
+                container,
+                "requests",
+                "memory",
+            ),
+            "cpu_limit": container_resource_value(
+                container,
+                "limits",
+                "cpu",
+            ),
+            "memory_limit": container_resource_value(
+                container,
+                "limits",
+                "memory",
+            ),
         }
         for container in (
             spec.get("template", {}).get("spec", {}).get("containers", [])
@@ -690,6 +753,179 @@ def get_service_endpoints(
         "not_ready_addresses": (
             not_ready_addresses
         ),
+    }
+
+def get_hpa(
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized HPA configuration and status."""
+
+    name = validate_dns_label(name, "name")
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    payload = run_kubectl(
+        [
+            "get",
+            "hpa",
+            name,
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    metadata = payload.get("metadata", {})
+    spec = payload.get("spec", {})
+    status = payload.get("status", {})
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    if not isinstance(spec, dict):
+        spec = {}
+
+    if not isinstance(status, dict):
+        status = {}
+
+    target_ref = spec.get(
+        "scaleTargetRef",
+        {},
+    )
+
+    if not isinstance(target_ref, dict):
+        target_ref = {}
+
+    target_cpu_utilization = None
+    metrics = spec.get("metrics", [])
+
+    if not isinstance(metrics, list):
+        metrics = []
+
+    for metric in metrics:
+        if (
+            not isinstance(metric, dict)
+            or metric.get("type") != "Resource"
+        ):
+            continue
+
+        resource = metric.get("resource", {})
+
+        if (
+            not isinstance(resource, dict)
+            or resource.get("name") != "cpu"
+        ):
+            continue
+
+        target = resource.get("target", {})
+
+        if not isinstance(target, dict):
+            continue
+
+        target_cpu_utilization = integer_or_none(
+            target.get("averageUtilization")
+        )
+        break
+
+    current_cpu_utilization = None
+    current_metrics = status.get(
+        "currentMetrics",
+        [],
+    )
+
+    if not isinstance(current_metrics, list):
+        current_metrics = []
+
+    for metric in current_metrics:
+        if (
+            not isinstance(metric, dict)
+            or metric.get("type") != "Resource"
+        ):
+            continue
+
+        resource = metric.get("resource", {})
+
+        if (
+            not isinstance(resource, dict)
+            or resource.get("name") != "cpu"
+        ):
+            continue
+
+        current = resource.get("current", {})
+
+        if not isinstance(current, dict):
+            continue
+
+        current_cpu_utilization = integer_or_none(
+            current.get("averageUtilization")
+        )
+        break
+
+    conditions = []
+
+    raw_conditions = status.get(
+        "conditions",
+        [],
+    )
+
+    if not isinstance(raw_conditions, list):
+        raw_conditions = []
+
+    for condition in raw_conditions[:20]:
+        if not isinstance(condition, dict):
+            continue
+
+        conditions.append(
+            {
+                "type": condition.get("type"),
+                "status": condition.get("status"),
+                "reason": condition.get("reason"),
+                "message": condition.get("message"),
+                "last_transition_time": (
+                    condition.get(
+                        "lastTransitionTime"
+                    )
+                ),
+            }
+        )
+
+    result_name = metadata.get("name", name)
+
+    if (
+        not isinstance(result_name, str)
+        or not result_name
+    ):
+        result_name = name
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "name": result_name,
+        "target": {
+            "kind": target_ref.get("kind"),
+            "name": target_ref.get("name"),
+        },
+        "min_replicas": integer_or_none(
+            spec.get("minReplicas")
+        ),
+        "max_replicas": integer_or_none(
+            spec.get("maxReplicas")
+        ),
+        "current_replicas": integer_or_none(
+            status.get("currentReplicas")
+        ),
+        "desired_replicas": integer_or_none(
+            status.get("desiredReplicas")
+        ),
+        "target_cpu_utilization": (
+            target_cpu_utilization
+        ),
+        "current_cpu_utilization": (
+            current_cpu_utilization
+        ),
+        "conditions": conditions,
     }
 
 def get_network_policies(

@@ -664,6 +664,69 @@ def create_kubernetes_report(
         ),
     }
 
+    hpa_metric_failure = (
+        _trace_hpa_metric_failure(
+            trace
+        )
+    )
+
+    if hpa_metric_failure is not None:
+        (
+            hpa_name,
+            reason,
+            message,
+            cpu_request_state,
+            missing_cpu_requests,
+        ) = hpa_metric_failure
+
+        if cpu_request_state == "present":
+            findings.append(
+                f"HPA {hpa_name} reports {reason}: "
+                f"{message} The resource metrics API "
+                "did not provide CPU utilization even "
+                "though Deployment CPU requests are "
+                "present."
+            )
+        elif cpu_request_state == "missing":
+            missing_text = ", ".join(
+                missing_cpu_requests
+            )
+
+            findings.append(
+                f"HPA {hpa_name} reports {reason}: "
+                "Deployment containers are missing "
+                f"CPU requests: {missing_text}."
+            )
+        else:
+            findings.append(
+                f"HPA {hpa_name} reports {reason}: "
+                f"{message} Deployment CPU request "
+                "evidence is unavailable."
+            )
+
+    hpa_scaling_limit = (
+        _trace_hpa_scaling_limit(
+            trace
+        )
+    )
+
+    if hpa_scaling_limit is not None:
+        (
+            hpa_name,
+            reason,
+            max_replicas,
+            current_cpu,
+            target_cpu,
+        ) = hpa_scaling_limit
+
+        findings.append(
+            f"HPA {hpa_name} reports {reason} "
+            f"and is limited at its maximum of "
+            f"{max_replicas} replicas while current "
+            f"CPU utilization is {current_cpu}% "
+            f"above target {target_cpu}%."
+        )
+
     warning_events = [
         event
         for event in events.get("events", [])
@@ -1052,6 +1115,360 @@ def _diagnosis_preserves_node_not_ready(
         or "worker node is not ready" in diagnosis_text
     )
 
+def _trace_hpa_metric_failure(
+    trace: list[ToolResult],
+) -> tuple[str, str, str, str, list[str]] | None:
+    """Return HPA metric failure and CPU request state."""
+
+    containers: list[dict[str, Any]] = []
+
+    for result in trace:
+        if (
+            result.tool != "get_deployment"
+            or not result.success
+        ):
+            continue
+
+        raw_containers = result.data.get(
+            "containers",
+            [],
+        )
+
+        if isinstance(raw_containers, list):
+            containers = [
+                container
+                for container in raw_containers
+                if isinstance(container, dict)
+            ]
+
+        break
+
+    missing_cpu_requests = []
+
+    for container in containers:
+        cpu_request = container.get(
+            "cpu_request"
+        )
+
+        if (
+            not isinstance(cpu_request, str)
+            or not cpu_request
+        ):
+            container_name = container.get(
+                "name",
+                "unknown",
+            )
+
+            if not isinstance(container_name, str):
+                container_name = "unknown"
+
+            missing_cpu_requests.append(
+                container_name
+            )
+
+    if not containers:
+        cpu_request_state = "unknown"
+    elif missing_cpu_requests:
+        cpu_request_state = "missing"
+    else:
+        cpu_request_state = "present"
+
+    for result in trace:
+        if (
+            result.tool != "get_hpa"
+            or not result.success
+        ):
+            continue
+
+        hpa_name = result.data.get("name")
+        conditions = result.data.get(
+            "conditions",
+            [],
+        )
+
+        if (
+            not isinstance(hpa_name, str)
+            or not hpa_name
+            or not isinstance(conditions, list)
+        ):
+            continue
+
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+
+            if (
+                condition.get("type")
+                != "ScalingActive"
+                or condition.get("status")
+                != "False"
+                or condition.get("reason")
+                != "FailedGetResourceMetric"
+            ):
+                continue
+
+            reason = condition.get("reason")
+            message = condition.get("message")
+
+            if not isinstance(reason, str):
+                reason = (
+                    "FailedGetResourceMetric"
+                )
+
+            if not isinstance(message, str):
+                message = (
+                    "CPU resource metrics are "
+                    "unavailable."
+                )
+
+            return (
+                hpa_name,
+                reason,
+                message,
+                cpu_request_state,
+                missing_cpu_requests,
+            )
+
+    return None
+
+def _diagnosis_preserves_hpa_metric_failure(
+    hpa_name: str,
+    reason: str,
+    cpu_request_state: str,
+    missing_cpu_requests: list[str],
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves HPA evidence."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    contradictory_claim = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "hpa is healthy",
+            "scaling normally",
+            "no failedgetresourcemetric",
+            "metrics api is available",
+            "resource metrics api is available",
+            "metrics are available",
+            "cpu metrics are available",
+        )
+    )
+
+    if contradictory_claim:
+        return False
+
+    common_evidence_preserved = (
+        hpa_name.lower() in diagnosis_text
+        and reason.lower() in diagnosis_text
+    )
+
+    if not common_evidence_preserved:
+        return False
+
+    if cpu_request_state == "present":
+        metrics_failure_preserved = (
+            "resource metrics api"
+            in diagnosis_text
+            and any(
+                phrase in diagnosis_text
+                for phrase in (
+                    "unavailable",
+                    "no metrics",
+                    "did not provide",
+                    "failed to provide",
+                    "returned no",
+                )
+            )
+        )
+
+        requests_preserved = any(
+            phrase in diagnosis_text
+            for phrase in (
+                "cpu requests are present",
+                "cpu requests exist",
+                "defines cpu requests",
+                "has cpu requests",
+            )
+        )
+
+        return (
+            metrics_failure_preserved
+            and requests_preserved
+        )
+
+    if cpu_request_state == "missing":
+        if "missing cpu request" not in diagnosis_text:
+            return False
+
+        return all(
+            container.lower() in diagnosis_text
+            for container in missing_cpu_requests
+        )
+
+    return any(
+        phrase in diagnosis_text
+        for phrase in (
+            "cpu request evidence is unavailable",
+            "cpu requests could not be verified",
+            "cpu request state is unknown",
+        )
+    )
+
+def _trace_hpa_scaling_limit(
+    trace: list[ToolResult],
+) -> tuple[str, str, int, int, int] | None:
+    """Return an HPA constrained at maximum replicas."""
+
+    for result in trace:
+        if (
+            result.tool != "get_hpa"
+            or not result.success
+        ):
+            continue
+
+        hpa_name = result.data.get("name")
+        max_replicas = result.data.get(
+            "max_replicas"
+        )
+        current_replicas = result.data.get(
+            "current_replicas"
+        )
+        current_cpu = result.data.get(
+            "current_cpu_utilization"
+        )
+        target_cpu = result.data.get(
+            "target_cpu_utilization"
+        )
+        conditions = result.data.get(
+            "conditions",
+            [],
+        )
+
+        integer_values = (
+            max_replicas,
+            current_replicas,
+            current_cpu,
+            target_cpu,
+        )
+
+        if (
+            not isinstance(hpa_name, str)
+            or not hpa_name
+            or not isinstance(conditions, list)
+            or not all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                for value in integer_values
+            )
+            or current_replicas != max_replicas
+            or current_cpu <= target_cpu
+        ):
+            continue
+
+        for condition in conditions:
+            if (
+                not isinstance(condition, dict)
+                or condition.get("type")
+                != "ScalingLimited"
+                or condition.get("status")
+                != "True"
+            ):
+                continue
+
+            reason = condition.get("reason")
+
+            if not isinstance(reason, str) or not reason:
+                reason = "ScalingLimited"
+
+            return (
+                hpa_name,
+                reason,
+                max_replicas,
+                current_cpu,
+                target_cpu,
+            )
+
+    return None
+
+def _diagnosis_preserves_hpa_scaling_limit(
+    hpa_name: str,
+    reason: str,
+    max_replicas: int,
+    current_cpu: int,
+    target_cpu: int,
+    summary: str,
+    probable_cause: str,
+) -> bool:
+    """Return whether diagnosis preserves HPA limit."""
+
+    diagnosis_text = (
+        f"{summary} {probable_cause}"
+    ).lower()
+
+    contradictory_claim = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "is not limited",
+            "not scaling limited",
+            "can continue scaling",
+            "has not reached",
+            "below the target",
+            "below target",
+            f"{reason.lower()} is not active",
+        )
+    )
+
+    if contradictory_claim:
+        return False
+
+    limit_signal_preserved = any(
+        phrase in diagnosis_text
+        for phrase in (
+            "limited at",
+            "reached its maximum",
+            "at the maximum",
+            "maximum replica limit",
+            "scalinglimited=true",
+            "scaling limited",
+        )
+    )
+
+    maximum_preserved = any(
+        phrase in diagnosis_text
+        for phrase in (
+            f"maximum of {max_replicas} replicas",
+            f"maximum {max_replicas} replicas",
+            f"maxreplicas {max_replicas}",
+            f"limit of {max_replicas} replicas",
+        )
+    )
+
+    utilization_preserved = (
+        f"{current_cpu}%" in diagnosis_text
+        and f"{target_cpu}%" in diagnosis_text
+        and any(
+            phrase in diagnosis_text
+            for phrase in (
+                "above target",
+                "above the target",
+                "exceeds target",
+                "exceeds the target",
+                "higher than target",
+            )
+        )
+    )
+
+    return (
+        hpa_name.lower() in diagnosis_text
+        and reason.lower() in diagnosis_text
+        and limit_signal_preserved
+        and maximum_preserved
+        and utilization_preserved
+    )
 
 def _trace_node_pressure_reason(
     trace: list[ToolResult],
@@ -1265,6 +1682,69 @@ def enrich_report_with_llm(
         ):
             return report
 
+    hpa_metric_failure = (
+        _trace_hpa_metric_failure(
+            trace
+        )
+    )
+
+    if hpa_metric_failure is not None:
+        (
+            hpa_name,
+            reason,
+            _message,
+            cpu_request_state,
+            missing_cpu_requests,
+        ) = hpa_metric_failure
+
+        if not (
+            _diagnosis_preserves_hpa_metric_failure(
+                hpa_name=hpa_name,
+                reason=reason,
+                cpu_request_state=(
+                    cpu_request_state
+                ),
+                missing_cpu_requests=(
+                    missing_cpu_requests
+                ),
+                summary=diagnosis.summary,
+                probable_cause=(
+                    diagnosis.probable_cause
+                ),
+            )
+        ):
+            return report
+
+    hpa_scaling_limit = (
+        _trace_hpa_scaling_limit(
+            trace
+        )
+    )
+
+    if hpa_scaling_limit is not None:
+        (
+            hpa_name,
+            reason,
+            max_replicas,
+            current_cpu,
+            target_cpu,
+        ) = hpa_scaling_limit
+
+        if not (
+            _diagnosis_preserves_hpa_scaling_limit(
+                hpa_name=hpa_name,
+                reason=reason,
+                max_replicas=max_replicas,
+                current_cpu=current_cpu,
+                target_cpu=target_cpu,
+                summary=diagnosis.summary,
+                probable_cause=(
+                    diagnosis.probable_cause
+                ),
+            )
+        ):
+            return report
+
     return report.model_copy(
         update={
             "summary": diagnosis.summary,
@@ -1301,6 +1781,7 @@ def run_kubernetes_investigation(
     name: str,
     namespace: str = "dev",
     event_limit: int = 20,
+    hpa_name: str | None = None
 ) -> IncidentReport:
     """Run a bounded, read-only Kubernetes investigation."""
 
@@ -1478,6 +1959,16 @@ def run_kubernetes_investigation(
                 },
             )
             trace.append(policies_result)
+
+    if hpa_name is not None:
+        hpa_result = execute_tool(
+            "get_hpa",
+            {
+                "name": hpa_name,
+                "namespace": namespace,
+            },
+        )
+        trace.append(hpa_result)
 
     report = create_kubernetes_report(
         name=name,
