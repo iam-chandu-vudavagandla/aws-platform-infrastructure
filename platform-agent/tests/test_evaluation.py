@@ -75,8 +75,11 @@ def test_evaluator_reports_all_expectation_failures() -> None:
 def test_evaluate_directory_runs_all_fixtures() -> None:
     results = evaluate_directory(FIXTURE_DIRECTORY)
 
-    assert len(results) == 1
+    assert len(results) == 4
     assert [result.case_name for result in results] == [
+        "dns-resolution-failure",
+        "hpa-resource-metrics-api-failure",
+        "networkpolicy-default-deny-egress",
         "oomkilled-container",
     ]
     assert all(result.passed for result in results)

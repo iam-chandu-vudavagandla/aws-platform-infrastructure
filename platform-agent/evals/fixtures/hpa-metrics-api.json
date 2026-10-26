@@ -1,0 +1,117 @@
+{
+  "name": "hpa-resource-metrics-api-failure",
+  "deployment": "aws-platform-app",
+  "namespace": "dev",
+  "trace": [
+    {
+      "tool": "get_deployment",
+      "arguments": {
+        "name": "aws-platform-app",
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "selector": "app=aws-platform-app",
+        "generation": 2,
+        "observed_generation": 2,
+        "desired_replicas": 2,
+        "ready_replicas": 2,
+        "unavailable_replicas": 0,
+        "containers": [
+          {
+            "name": "app",
+            "image": "example/app:1.0",
+            "cpu_request": "250m",
+            "memory_request": "256Mi",
+            "cpu_limit": "500m",
+            "memory_limit": "512Mi"
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pods",
+      "arguments": {
+        "namespace": "dev",
+        "selector": "app=aws-platform-app"
+      },
+      "success": true,
+      "data": {
+        "pods": [
+          {
+            "name": "app-123",
+            "phase": "Running",
+            "ready_containers": 1,
+            "total_containers": 1,
+            "restarts": 0
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_events",
+      "arguments": {
+        "namespace": "dev",
+        "limit": 20
+      },
+      "success": true,
+      "data": {
+        "events": []
+      },
+      "error": null
+    },
+    {
+      "tool": "get_hpa",
+      "arguments": {
+        "name": "aws-platform-app-hpa",
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "name": "aws-platform-app-hpa",
+        "target": {
+          "kind": "Deployment",
+          "name": "aws-platform-app"
+        },
+        "min_replicas": 2,
+        "max_replicas": 5,
+        "current_replicas": 2,
+        "desired_replicas": 2,
+        "target_cpu_utilization": 50,
+        "current_cpu_utilization": null,
+        "conditions": [
+          {
+            "type": "ScalingActive",
+            "status": "False",
+            "reason": "FailedGetResourceMetric",
+            "message": "No metrics returned from resource metrics API.",
+            "last_transition_time": "2026-10-26T05:00:00Z"
+          }
+        ]
+      },
+      "error": null
+    }
+  ],
+  "expected": {
+    "confidence": "high",
+    "approval_required": true,
+    "required_diagnosis_terms": [
+      "aws-platform-app-hpa",
+      "failedgetresourcemetric",
+      "resource metrics api",
+      "cpu requests are present"
+    ],
+    "forbidden_output_terms": [
+      "missing cpu requests",
+      "scaling normally",
+      "oomkilled"
+    ],
+    "required_evidence_sources": [
+      "get_deployment",
+      "get_hpa"
+    ],
+    "errors": []
+  }
+}

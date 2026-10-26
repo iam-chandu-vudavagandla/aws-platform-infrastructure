@@ -64,6 +64,15 @@ Exit codes:
 - `1`: one or more fixtures failed
 - `2`: invalid command-line input
 
+Current offline evaluation matrix:
+
+| Scenario | Reliability boundary |
+|---|---|
+| OOMKilled container | Container memory and exit evidence |
+| DNS resolution failure | Application dependency and resolver evidence |
+| Default-deny egress | Pod-label and NetworkPolicy correlation |
+| HPA metrics API failure | Autoscaling conditions and CPU-request evidence |
+
 ### Include HPA evidence
 
 ```bash

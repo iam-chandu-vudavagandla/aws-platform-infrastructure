@@ -1,0 +1,129 @@
+{
+  "name": "networkpolicy-default-deny-egress",
+  "deployment": "aws-platform-app",
+  "namespace": "dev",
+  "trace": [
+    {
+      "tool": "get_deployment",
+      "arguments": {
+        "name": "aws-platform-app",
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "selector": "app=aws-platform-app",
+        "generation": 2,
+        "observed_generation": 2,
+        "desired_replicas": 2,
+        "ready_replicas": 2,
+        "unavailable_replicas": 0
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pods",
+      "arguments": {
+        "namespace": "dev",
+        "selector": "app=aws-platform-app"
+      },
+      "success": true,
+      "data": {
+        "pods": [
+          {
+            "name": "app-123",
+            "phase": "Running",
+            "ready_containers": 1,
+            "total_containers": 1,
+            "restarts": 0,
+            "labels": {
+              "app": "aws-platform-app"
+            }
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_events",
+      "arguments": {
+        "namespace": "dev",
+        "limit": 20
+      },
+      "success": true,
+      "data": {
+        "events": []
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pod_logs",
+      "arguments": {
+        "pod": "app-123",
+        "namespace": "dev",
+        "tail_lines": 100,
+        "since_seconds": 600
+      },
+      "success": true,
+      "data": {
+        "pod": "app-123",
+        "line_count": 1,
+        "truncated": false,
+        "logs": [
+          "dial tcp: lookup database.default.svc.cluster.local on 10.100.0.10:53: no such host"
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_network_policies",
+      "arguments": {
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "namespace": "dev",
+        "count": 1,
+        "returned_policies": 1,
+        "truncated": false,
+        "policies": [
+          {
+            "name": "deny-app-egress",
+            "pod_selector": {
+              "app": "aws-platform-app"
+            },
+            "has_match_expressions": false,
+            "policy_types": [
+              "Egress"
+            ],
+            "ingress_rule_count": 0,
+            "egress_rule_count": 0,
+            "default_deny_ingress": false,
+            "default_deny_egress": true
+          }
+        ]
+      },
+      "error": null
+    }
+  ],
+  "expected": {
+    "confidence": "high",
+    "approval_required": true,
+    "required_diagnosis_terms": [
+      "deny-app-egress",
+      "app-123",
+      "default-deny egress"
+    ],
+    "forbidden_output_terms": [
+      "allows all egress",
+      "oomkilled",
+      "image pull failure"
+    ],
+    "required_evidence_sources": [
+      "get_deployment",
+      "get_pods",
+      "get_pod_logs",
+      "get_network_policies"
+    ],
+    "errors": []
+  }
+}

@@ -250,3 +250,15 @@ The evaluator must:
 Evaluation fixtures must contain saved read-only evidence. Running the
 evaluation suite must not contact AWS, Kubernetes, Ollama or any other
 external service.
+
+### Current evaluation scenarios
+
+The committed evaluation suite covers:
+
+- OOMKilled containers with exit code 137
+- DNS resolution failures containing the affected service and resolver response
+- Matching default-deny egress policies affecting workload pods
+- HPA `FailedGetResourceMetric` failures when CPU requests are present
+
+Each scenario includes forbidden output terms to detect contradictory or
+unsupported diagnoses.

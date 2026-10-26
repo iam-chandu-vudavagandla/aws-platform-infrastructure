@@ -221,13 +221,24 @@ def test_evaluate_fixtures_returns_json_summary(
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["total"] == 1
-    assert payload["passed"] == 1
-    assert payload["failed"] == 0
-    assert payload["results"][0]["case_name"] == (
-        "oomkilled-container"
+    expected_total = len(
+        list(fixture_directory.glob("*.json"))
     )
-    assert payload["results"][0]["passed"] is True
+
+    assert payload["total"] == expected_total
+    assert payload["passed"] == expected_total
+    assert payload["failed"] == 0
+
+    case_names = {
+        result["case_name"]
+        for result in payload["results"]
+    }
+
+    assert "oomkilled-container" in case_names
+    assert all(
+        result["passed"]
+        for result in payload["results"]
+    )
 
 def test_evaluate_returns_one_when_a_fixture_fails(
     monkeypatch: pytest.MonkeyPatch,
