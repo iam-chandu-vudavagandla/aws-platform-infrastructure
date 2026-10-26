@@ -142,3 +142,62 @@ def test_cli_rejects_invalid_event_limit() -> None:
         )
 
     assert error.value.code == 2
+
+def test_investigate_kubernetes_passes_hpa_name(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = IncidentReport(
+        summary="HPA evidence was collected.",
+        probable_cause=(
+            "The resource metrics API is unavailable."
+        ),
+        evidence=[],
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Review Metrics Server."
+        ),
+        approval_required=True,
+        tool_trace=[],
+        errors=[],
+    )
+
+    received_arguments: dict[str, object] = {}
+
+    def fake_investigation(
+        **kwargs: object,
+    ) -> IncidentReport:
+        received_arguments.update(kwargs)
+        return report
+
+    monkeypatch.setattr(
+        cli,
+        "run_kubernetes_investigation",
+        fake_investigation,
+    )
+
+    exit_code = cli.main(
+        [
+            "investigate-kubernetes",
+            "aws-platform-app",
+            "--namespace",
+            "dev",
+            "--event-limit",
+            "10",
+            "--hpa-name",
+            "aws-platform-app-hpa",
+        ]
+    )
+
+    payload = json.loads(
+        capsys.readouterr().out
+    )
+
+    assert exit_code == 0
+    assert received_arguments == {
+        "name": "aws-platform-app",
+        "namespace": "dev",
+        "event_limit": 10,
+        "hpa_name": "aws-platform-app-hpa",
+    }
+    assert payload["approval_required"] is True

@@ -90,6 +90,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum recent events to inspect (default: 20).",
     )
 
+    kubernetes_parser.add_argument(
+        "--hpa-name",
+        default=None,
+        help=(
+            "Optional HorizontalPodAutoscaler name "
+            "to include in the investigation."
+        ),
+    )
+
     return parser
 
 
@@ -112,8 +121,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             name=arguments.deployment,
             namespace=arguments.namespace,
             event_limit=arguments.event_limit,
+            hpa_name=arguments.hpa_name,
         )
-
         print(report.model_dump_json(indent=2))
         return 2 if report.errors else 0
 
