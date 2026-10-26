@@ -145,10 +145,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2 if report.errors else 0
 
     if arguments.command == "evaluate":
-        results = evaluate_directory(
-            arguments.fixture_directory
-        )
+        try:
+            results = evaluate_directory(
+                arguments.fixture_directory
+            )
+        except (OSError, ValueError) as error:
+            payload = {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "results": [],
+                "errors": [
+                    str(error),
+                ],
+            }
 
+            print(json.dumps(payload, indent=2))
+            return 2
         passed = sum(
             1
             for result in results

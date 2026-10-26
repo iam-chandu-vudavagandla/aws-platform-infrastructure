@@ -239,6 +239,7 @@ def test_evaluate_fixtures_returns_json_summary(
         result["passed"]
         for result in payload["results"]
     )
+    assert payload.get("errors", []) == []
 
 def test_evaluate_returns_one_when_a_fixture_fails(
     monkeypatch: pytest.MonkeyPatch,
@@ -286,3 +287,68 @@ def test_evaluate_returns_one_when_a_fixture_fails(
     assert payload["results"][0]["failures"] == [
         "Required diagnosis term was not found.",
     ]
+
+def test_evaluate_missing_directory_returns_structured_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing_directory = (
+        tmp_path
+        / "missing-evaluation-fixtures"
+    )
+
+    exit_code = cli.main(
+        [
+            "evaluate",
+            str(missing_directory),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert payload == {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "results": [],
+        "errors": [
+            (
+                "Evaluation fixture directory "
+                "does not exist: "
+                f"{missing_directory}"
+            )
+        ],
+    }
+    assert captured.err == ""
+
+def test_evaluate_malformed_fixture_returns_structured_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture_path = tmp_path / "malformed.json"
+
+    fixture_path.write_text(
+        '{"name":',
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "evaluate",
+            str(tmp_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert payload["total"] == 0
+    assert payload["passed"] == 0
+    assert payload["failed"] == 0
+    assert payload["results"] == []
+    assert len(payload["errors"]) == 1
+    assert "Invalid JSON" in payload["errors"][0]
+    assert captured.err == ""

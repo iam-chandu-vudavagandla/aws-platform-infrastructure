@@ -251,6 +251,19 @@ Evaluation fixtures must contain saved read-only evidence. Running the
 evaluation suite must not contact AWS, Kubernetes, Ollama or any other
 external service.
 
+### Evaluation failure classes
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Every valid evaluation fixture passed |
+| `1` | At least one valid fixture failed its expectations |
+| `2` | The fixture input or directory was invalid |
+
+Missing directories, empty directories, unreadable files and malformed
+fixtures must produce a structured JSON error response without exposing
+a Python traceback. Unexpected programming errors must not be silently
+converted into input errors.
+
 ### Current evaluation scenarios
 
 The committed evaluation suite covers:

@@ -60,9 +60,12 @@ Evaluations run locally without AWS, Kubernetes or Ollama.
 
 Exit codes:
 
-- `0`: every fixture passed
-- `1`: one or more fixtures failed
-- `2`: invalid command-line input
+- `0`: every valid fixture passed
+- `1`: one or more valid fixtures failed its expectations
+- `2`: invalid arguments, missing or empty fixture directories, or malformed fixtures
+
+Expected evaluation-input errors are returned as JSON without a Python
+traceback, making the command safe for scripts and CI pipelines.
 
 Current offline evaluation matrix:
 
