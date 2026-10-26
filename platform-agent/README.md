@@ -186,7 +186,6 @@ The current image supports the CLI and offline evaluation workflow.
 Live Kubernetes investigation requires `kubectl` and external runtime
 configuration; these are not baked into the image.
 
-
 ## Continuous integration
 
 The GitHub Actions `Python validation` job installs the application and
@@ -219,7 +218,7 @@ python -m pip check
 
 ## Current validation
 
-The project currently has 125 automated tests covering:
+The project currently has 136 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries
