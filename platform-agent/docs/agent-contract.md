@@ -293,4 +293,3 @@ a short-lived CLI process rather than a continuously running service.
 
 Cloud credentials, kubeconfig and model data must be supplied externally
 to any future live runtime and must never be copied into the image.
-

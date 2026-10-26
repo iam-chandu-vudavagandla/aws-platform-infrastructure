@@ -161,6 +161,31 @@ Build the reliability-agent image from the repository root:
 docker build \
   --tag platform-agent:local \
   platform-agent
+```
+
+Run the offline evaluation suite inside the container:
+
+```bash
+docker run \
+  --rm \
+  platform-agent:local \
+  evaluate \
+  evals/fixtures
+```
+
+The image:
+
+- Uses Python 3.12 on Alpine Linux
+- Runs as non-root UID and GID `10001`
+- Uses `platform-agent` as its entry point
+- Contains the committed offline evaluation fixtures
+- Excludes tests, virtual environments, state files, keys and local environment files
+- Contains no AWS credentials, kubeconfig or Ollama model data
+
+The current image supports the CLI and offline evaluation workflow.
+Live Kubernetes investigation requires `kubectl` and external runtime
+configuration; these are not baked into the image.
+
 
 ## Continuous integration
 
