@@ -275,3 +275,22 @@ The committed evaluation suite covers:
 
 Each scenario includes forbidden output terms to detect contradictory or
 unsupported diagnoses.
+
+## Container runtime contract
+
+The reliability-agent container must:
+
+- Use the project’s tested Python 3.12 runtime
+- Run as non-root UID and GID `10001`
+- Expose `platform-agent` as its entry point
+- Include committed offline evaluation fixtures
+- Exclude development tests and local virtual environments
+- Exclude credentials, private keys, Terraform state and environment files
+- Complete all offline evaluations without AWS, Kubernetes or Ollama access
+
+The image does not include a health check because the agent is currently
+a short-lived CLI process rather than a continuously running service.
+
+Cloud credentials, kubeconfig and model data must be supplied externally
+to any future live runtime and must never be copied into the image.
+

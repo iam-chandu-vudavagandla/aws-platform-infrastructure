@@ -155,6 +155,17 @@ jobs:
           push: false
           tags: aws-platform-app:ci
 
+      - name: Build reliability-agent image
+        uses: docker/build-push-action@v7
+        with:
+          context: platform-agent
+          load: true
+          push: false
+          tags: platform-agent:ci
+
+      - name: Run containerized agent evaluations
+        run: docker run --rm platform-agent:ci evaluate evals/fixtures
+
   secrets:
     name: Basic credential scan
     runs-on: ubuntu-latest

@@ -153,6 +153,15 @@ the explicit Python allowlist.
 - No automatic remediation
 - Human approval required for recommended changes
 
+## Container image
+
+Build the reliability-agent image from the repository root:
+
+```bash
+docker build \
+  --tag platform-agent:local \
+  platform-agent
+
 ## Continuous integration
 
 The GitHub Actions `Python validation` job installs the application and
