@@ -44,6 +44,26 @@ The investigation collects read-only evidence from:
 - NetworkPolicies
 - Node and scheduling conditions
 
+### Run offline incident evaluations
+
+```bash
+platform-agent evaluate evals/fixtures
+```
+
+
+The command loads every JSON fixture, recreates a deterministic
+incident report from its saved tool trace, and checks confidence,
+approval requirements, required diagnosis terms, forbidden output,
+evidence sources, expected errors and complete trace preservation.
+
+Evaluations run locally without AWS, Kubernetes or Ollama.
+
+Exit codes:
+
+- `0`: every fixture passed
+- `1`: one or more fixtures failed
+- `2`: invalid command-line input
+
 ### Include HPA evidence
 
 ```bash

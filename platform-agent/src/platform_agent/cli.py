@@ -1,4 +1,5 @@
 import argparse
+import json
 from collections.abc import Sequence
 
 from platform_agent.agent import (
@@ -8,7 +9,7 @@ from platform_agent.agent import (
 from platform_agent.kubernetes_investigation import (
     run_kubernetes_investigation,
 )
-
+from platform_agent.evaluation import evaluate_directory
 
 def positive_integer(value: str) -> int:
     """Validate positive integer command-line arguments."""
@@ -99,6 +100,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    evaluation_parser = subparsers.add_parser(
+        "evaluate",
+        help=(
+            "Run offline incident evaluation fixtures."
+        ),
+    )
+
+    evaluation_parser.add_argument(
+        "fixture_directory",
+        nargs="?",
+        default="evals/fixtures",
+        help=(
+            "Directory containing JSON evaluation fixtures "
+            "(default: evals/fixtures)."
+        ),
+    )
+
     return parser
 
 
@@ -125,6 +143,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(report.model_dump_json(indent=2))
         return 2 if report.errors else 0
+
+    if arguments.command == "evaluate":
+        results = evaluate_directory(
+            arguments.fixture_directory
+        )
+
+        passed = sum(
+            1
+            for result in results
+            if result.passed
+        )
+        failed = len(results) - passed
+
+        payload = {
+            "total": len(results),
+            "passed": passed,
+            "failed": failed,
+            "results": [
+                result.model_dump(mode="json")
+                for result in results
+            ],
+        }
+
+        print(json.dumps(payload, indent=2))
+
+        return 1 if failed else 0
 
     parser.error("Unsupported command.")
     return 2

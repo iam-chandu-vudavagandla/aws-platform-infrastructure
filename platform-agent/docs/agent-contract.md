@@ -223,3 +223,30 @@ The current version does not:
 - Change NetworkPolicies
 - Restart workloads
 - Guarantee a diagnosis when required evidence is unavailable
+
+## Offline evaluation contract
+
+Each evaluation fixture contains:
+
+- A unique scenario name
+- Deployment and namespace identifiers
+- A saved list of validated `ToolResult` objects
+- Expected confidence and approval behavior
+- Required diagnosis terms
+- Forbidden output terms
+- Required evidence sources
+- Expected errors
+
+The evaluator must:
+
+1. Validate every fixture using strict Pydantic models.
+2. Build the report through the deterministic reporting path.
+3. Compare the complete report with every declared expectation.
+4. Preserve the original tool trace without modification.
+5. Return all detected mismatches rather than stopping after the first.
+6. Process fixture files in deterministic filename order.
+7. Fail when the fixture directory is missing or empty.
+
+Evaluation fixtures must contain saved read-only evidence. Running the
+evaluation suite must not contact AWS, Kubernetes, Ollama or any other
+external service.

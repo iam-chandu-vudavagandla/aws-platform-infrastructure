@@ -201,3 +201,77 @@ def test_investigate_kubernetes_passes_hpa_name(
         "hpa_name": "aws-platform-app-hpa",
     }
     assert payload["approval_required"] is True
+
+def test_evaluate_fixtures_returns_json_summary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture_directory = (
+        Path(__file__).resolve().parents[1]
+        / "evals"
+        / "fixtures"
+    )
+
+    exit_code = cli.main(
+        [
+            "evaluate",
+            str(fixture_directory),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["total"] == 1
+    assert payload["passed"] == 1
+    assert payload["failed"] == 0
+    assert payload["results"][0]["case_name"] == (
+        "oomkilled-container"
+    )
+    assert payload["results"][0]["passed"] is True
+
+def test_evaluate_returns_one_when_a_fixture_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture_directory = (
+        Path(__file__).resolve().parents[1]
+        / "evals"
+        / "fixtures"
+    )
+
+    passing_result = cli.evaluate_directory(
+        fixture_directory
+    )[0]
+
+    failing_result = passing_result.model_copy(
+        update={
+            "passed": False,
+            "failures": [
+                "Required diagnosis term was not found.",
+            ],
+        }
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "evaluate_directory",
+        lambda path: [failing_result],
+    )
+
+    exit_code = cli.main(
+        [
+            "evaluate",
+            str(fixture_directory),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["total"] == 1
+    assert payload["passed"] == 0
+    assert payload["failed"] == 1
+    assert payload["results"][0]["passed"] is False
+    assert payload["results"][0]["failures"] == [
+        "Required diagnosis term was not found.",
+    ]
