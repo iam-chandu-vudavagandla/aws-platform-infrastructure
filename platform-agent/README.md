@@ -181,24 +181,63 @@ The image:
 - Contains the committed offline evaluation fixtures
 - Excludes tests, virtual environments, state files, keys and local environment files
 - Contains no AWS credentials, kubeconfig or Ollama model data
+- Installs exact dependencies from the committed hashed `requirements.lock`
 
 The current image supports the CLI and offline evaluation workflow.
 Live Kubernetes investigation requires `kubectl` and external runtime
 configuration; these are not baked into the image.
 
+## Reproducible Python dependencies
+
+`pyproject.toml` defines the accepted dependency ranges.
+`requirements.lock` records the exact runtime and build dependency
+versions together with their permitted SHA-256 package hashes.
+
+The container installs the lock using pip hash-checking mode before
+installing the local project without dependency resolution or isolated
+build dependencies. A package is rejected if its version or downloaded
+artifact does not match the committed lock.
+
+After intentionally changing Python dependencies, regenerate the lock:
+
+```bash
+cd platform-agent
+source .venv/bin/activate
+
+PIP_DEFAULT_TIMEOUT=300 \
+PIP_RETRIES=20 \
+PIP_RESUME_RETRIES=20 \
+python -m piptools compile \
+  --all-build-deps \
+  --allow-unsafe \
+  --generate-hashes \
+  --no-emit-index-url \
+  --no-emit-trusted-host \
+  --strip-extras \
+  --pip-args="--retries 20 --resume-retries 20 --timeout 300" \
+  --output-file requirements.lock \
+  pyproject.toml
+```
+Review and commit `pyproject.toml` and `requirements.lock` together.
+Do not edit the generated lock manually.
 ## Continuous integration
 
 The GitHub Actions `Python validation` job installs the application and
 reliability-agent dependencies, then runs:
 
-1. Application tests
-2. All reliability-agent tests
-3. `python -m pip check`
-4. All committed offline incident evaluations
+1. Verifies that `requirements.lock` matches `pyproject.toml`
+2. Runs the application tests
+3. Runs all reliability-agent tests
+4. Runs `python -m pip check`
+5. Runs all committed offline incident evaluations
 
 The evaluation gate runs without AWS credentials, Kubernetes access or
 Ollama. A failed test, broken dependency or failed evaluation blocks the
 workflow.
+
+The Security workflow builds the reliability-agent image, publishes a
+CycloneDX SBOM artifact and blocks fixable HIGH or CRITICAL
+vulnerabilities detected by Trivy.
 
 ## Development
 
@@ -218,7 +257,7 @@ python -m pip check
 
 ## Current validation
 
-The project currently has 136 automated tests covering:
+The project currently has 139 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries
@@ -234,6 +273,9 @@ The project currently has 136 automated tests covering:
 - Deterministic reports
 - LLM evidence-preservation guardrails
 - CLI behavior
+- Hashed dependency installation
+- Dependency-lock freshness enforcement
+- Container and security workflow contracts
 
 The automated suite uses local fixtures and mocked Kubernetes responses,
 so it does not require active AWS resources.

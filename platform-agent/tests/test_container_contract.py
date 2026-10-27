@@ -44,3 +44,20 @@ def test_dockerignore_excludes_local_and_sensitive_files() -> None:
 
     assert required_entries <= entries
     assert "evals" not in entries
+
+def test_dockerfile_installs_hashed_runtime_lock() -> None:
+    content = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "COPY requirements.lock ./" in content
+    assert "--require-hashes" in content
+    assert "--requirement requirements.lock" in content
+    assert "--no-deps" in content
+    assert "--no-build-isolation" in content
+
+    lock_file = DOCKERFILE.parent / "requirements.lock"
+    lock_content = lock_file.read_text(encoding="utf-8")
+
+    assert "--hash=sha256:" in lock_content
+    assert "ollama==" in lock_content
+    assert "pydantic==" in lock_content
+    assert "setuptools==" in lock_content

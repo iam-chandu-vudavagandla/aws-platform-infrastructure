@@ -19,11 +19,18 @@ RUN addgroup \
         appuser
 
 COPY pyproject.toml README.md ./
+COPY requirements.lock ./
 COPY src ./src
 
 RUN python -m pip install \
-    --no-cache-dir \
-    .
+        --no-cache-dir \
+        --require-hashes \
+        --requirement requirements.lock \
+    && python -m pip install \
+        --no-cache-dir \
+        --no-deps \
+        --no-build-isolation \
+        .
 
 COPY --chown=appuser:appgroup \
     evals \

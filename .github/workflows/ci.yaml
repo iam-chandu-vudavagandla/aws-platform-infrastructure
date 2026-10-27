@@ -105,6 +105,7 @@ jobs:
           cache-dependency-path: |
             application/requirements.txt
             platform-agent/pyproject.toml
+            platform-agent/requirements.lock
 
       - name: Validate application syntax
         run: |
@@ -121,6 +122,25 @@ jobs:
             --requirement application/requirements.txt \
             pytest
           python -m pip install --editable './platform-agent[dev]'
+
+      - name: Verify reliability-agent dependency lock
+        working-directory: platform-agent
+        env:
+          PIP_DEFAULT_TIMEOUT: "300"
+          PIP_RETRIES: "20"
+          PIP_RESUME_RETRIES: "20"
+        run: |
+          python -m piptools compile \
+            --all-build-deps \
+            --allow-unsafe \
+            --generate-hashes \
+            --no-emit-index-url \
+            --no-emit-trusted-host \
+            --strip-extras \
+            --pip-args="--retries 20 --resume-retries 20 --timeout 300" \
+            --output-file requirements.lock \
+            pyproject.toml
+          git diff --exit-code -- requirements.lock
 
       - name: Run application tests
         working-directory: application
