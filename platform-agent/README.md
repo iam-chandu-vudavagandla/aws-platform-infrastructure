@@ -1,9 +1,13 @@
 # AWS Platform Reliability Agent
 
 A policy-controlled, read-only investigation agent for the
-aws-platform-infrastructure project.
+`aws-platform-infrastructure` project.
 
-## Current workflows
+The agent collects bounded Terraform and Kubernetes evidence, produces a
+structured incident report, and optionally uses a local LLM to improve the
+explanation without allowing the model to execute infrastructure changes.
+
+## Workflows
 
 ### Inspect a Terraform module
 
@@ -11,8 +15,12 @@ aws-platform-infrastructure project.
 platform-agent inspect-module modules/vpc
 ```
 
-The agent lists the module files and checks for `main.tf`,
-`variables.tf` and `outputs.tf`.
+The agent:
+
+1. Lists Terraform files inside the approved repository.
+2. Checks for `main.tf`, `variables.tf`, and `outputs.tf`.
+3. Rejects paths outside the approved project.
+4. Returns structured JSON and a meaningful exit code.
 
 ### Investigate a Kubernetes Deployment
 
@@ -26,14 +34,110 @@ platform-agent investigate-kubernetes \
   --event-limit 20
 ```
 
-The workflow:
+The investigation collects read-only evidence from:
 
-1. Reads the Deployment.
-2. Extracts its label selector.
-3. Reads only pods matching that selector.
-4. Reads recent namespace events.
-5. Ignores warning events unrelated to the Deployment and its pods.
-6. Produces a structured JSON incident report.
+- Deployment status and container resources
+- Pods selected by the Deployment
+- Namespace events scoped to the incident
+- Bounded recent pod logs
+- Service and EndpointSlice state
+- NetworkPolicies
+- Node and scheduling conditions
+
+### Run offline incident evaluations
+
+```bash
+platform-agent evaluate evals/fixtures
+```
+
+
+The command loads every JSON fixture, recreates a deterministic
+incident report from its saved tool trace, and checks confidence,
+approval requirements, required diagnosis terms, forbidden output,
+evidence sources, expected errors and complete trace preservation.
+
+Evaluations run locally without AWS, Kubernetes or Ollama.
+
+Exit codes:
+
+- `0`: every valid fixture passed
+- `1`: one or more valid fixtures failed its expectations
+- `2`: invalid arguments, missing or empty fixture directories, or malformed fixtures
+
+Expected evaluation-input errors are returned as JSON without a Python
+traceback, making the command safe for scripts and CI pipelines.
+
+Current offline evaluation matrix:
+
+| Scenario | Reliability boundary |
+|---|---|
+| OOMKilled container | Container memory and exit evidence |
+| DNS resolution failure | Application dependency and resolver evidence |
+| Default-deny egress | Pod-label and NetworkPolicy correlation |
+| HPA metrics API failure | Autoscaling conditions and CPU-request evidence |
+
+### Include HPA evidence
+
+```bash
+platform-agent investigate-kubernetes \
+  aws-platform-app \
+  --namespace dev \
+  --event-limit 20 \
+  --hpa-name aws-platform-app-hpa
+```
+
+The HPA investigation correlates:
+
+- `ScalingActive` and `ScalingLimited` conditions
+- Current and target CPU utilization
+- Minimum, maximum, current, and desired replicas
+- Deployment container CPU requests
+- Metrics API failures
+- Missing CPU requests
+- `maxReplicas` capacity limits
+
+## Diagnosis coverage
+
+The Kubernetes investigation recognizes evidence for:
+
+- Readiness and liveness probe failures
+- Missing Secrets
+- Failed scheduling
+- `OOMKilled` containers
+- Pod eviction
+- Node `NotReady` conditions
+- Node memory, disk, and PID pressure
+- DNS resolution failures
+- Services with zero ready endpoints
+- Service and Deployment selector mismatches
+- Default-deny NetworkPolicy egress
+- HPA resource-metric failures
+- Missing CPU requests
+- HPA maximum replica limits
+
+## Structured output
+
+Every investigation returns JSON containing:
+
+- Summary
+- Probable cause
+- Evidence
+- Confidence
+- Recommended action
+- Human-approval requirement
+- Complete tool-call trace
+- Errors or missing evidence
+
+## Deterministic and LLM-assisted diagnosis
+
+Deterministic evidence analysis remains the safety baseline.
+
+Optional local LLM enrichment can improve the wording of a diagnosis, but
+the application validates it against collected evidence. If the LLM omits
+or contradicts important facts, the deterministic report is returned.
+
+The LLM cannot execute tools directly. All tool execution passes through
+the explicit Python allowlist.
 
 ## Safety controls
 
@@ -41,10 +145,99 @@ The workflow:
 - Explicit tool allowlist
 - No arbitrary shell execution
 - Fixed Kubernetes context and AWS profile
-- Input validation for namespaces, names and selectors
-- Bounded tool execution
+- Validation of paths, namespaces, names, selectors, and bounds
+- Bounded pod logs, events, policies, and endpoint evidence
+- Incident-scoped evidence filtering
 - Complete tool-call trace
+- Deterministic fallback when LLM output is unsafe
 - No automatic remediation
+- Human approval required for recommended changes
+
+## Container image
+
+Build the reliability-agent image from the repository root:
+
+```bash
+docker build \
+  --tag platform-agent:local \
+  platform-agent
+```
+
+Run the offline evaluation suite inside the container:
+
+```bash
+docker run \
+  --rm \
+  platform-agent:local \
+  evaluate \
+  evals/fixtures
+```
+
+The image:
+
+- Uses Python 3.12 on Alpine Linux
+- Runs as non-root UID and GID `10001`
+- Uses `platform-agent` as its entry point
+- Contains the committed offline evaluation fixtures
+- Excludes tests, virtual environments, state files, keys and local environment files
+- Contains no AWS credentials, kubeconfig or Ollama model data
+- Installs exact dependencies from the committed hashed `requirements.lock`
+
+The current image supports the CLI and offline evaluation workflow.
+Live Kubernetes investigation requires `kubectl` and external runtime
+configuration; these are not baked into the image.
+
+## Reproducible Python dependencies
+
+`pyproject.toml` defines the accepted dependency ranges.
+`requirements.lock` records the exact runtime and build dependency
+versions together with their permitted SHA-256 package hashes.
+
+The container installs the lock using pip hash-checking mode before
+installing the local project without dependency resolution or isolated
+build dependencies. A package is rejected if its version or downloaded
+artifact does not match the committed lock.
+
+After intentionally changing Python dependencies, regenerate the lock:
+
+```bash
+cd platform-agent
+source .venv/bin/activate
+
+PIP_DEFAULT_TIMEOUT=300 \
+PIP_RETRIES=20 \
+PIP_RESUME_RETRIES=20 \
+python -m piptools compile \
+  --all-build-deps \
+  --allow-unsafe \
+  --generate-hashes \
+  --no-emit-index-url \
+  --no-emit-trusted-host \
+  --strip-extras \
+  --pip-args="--retries 20 --resume-retries 20 --timeout 300" \
+  --output-file requirements.lock \
+  pyproject.toml
+```
+Review and commit `pyproject.toml` and `requirements.lock` together.
+Do not edit the generated lock manually.
+## Continuous integration
+
+The GitHub Actions `Python validation` job installs the application and
+reliability-agent dependencies, then runs:
+
+1. Verifies that `requirements.lock` matches `pyproject.toml`
+2. Runs the application tests
+3. Runs all reliability-agent tests
+4. Runs `python -m pip check`
+5. Runs all committed offline incident evaluations
+
+The evaluation gate runs without AWS credentials, Kubernetes access or
+Ollama. A failed test, broken dependency or failed evaluation blocks the
+workflow.
+
+The Security workflow builds the reliability-agent image, publishes a
+CycloneDX SBOM artifact and blocks fixable HIGH or CRITICAL
+vulnerabilities detected by Trivy.
 
 ## Development
 
@@ -57,26 +250,32 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install --editable '.[dev]'
 
-ruff check src tests
-python -m pytest
+python -m compileall -q src tests
+pytest -q
+python -m pip check
 ```
 
 ## Current validation
 
-The test suite covers:
+The project currently has 139 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries
 - Tool allowlisting
 - Kubernetes input validation
 - Command failures and timeouts
-- Deployment health summaries
-- Pod readiness and restart evidence
-- Event ordering and filtering
-- Deployment-selector pod scoping
-- Healthy and unhealthy incident reports
+- Deployment, pod, event, and log evidence
+- Incident-scoped filtering
+- Service and EndpointSlice correlation
+- NetworkPolicy selector correlation
+- Node reliability conditions
+- HPA and resource-metric failures
+- Deterministic reports
+- LLM evidence-preservation guardrails
 - CLI behavior
+- Hashed dependency installation
+- Dependency-lock freshness enforcement
+- Container and security workflow contracts
 
-The live Kubernetes investigation has been validated against
-`aws-platform-app` in the `dev` namespace on
-`aws-platform-dev-eks`.
+The automated suite uses local fixtures and mocked Kubernetes responses,
+so it does not require active AWS resources.

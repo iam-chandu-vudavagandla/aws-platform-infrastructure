@@ -80,6 +80,7 @@ jobs:
       - name: Scan dependencies and repository files
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          version: v0.76.1
           scan-type: fs
           scan-ref: .
           scanners: vuln,secret,misconfig
@@ -110,6 +111,7 @@ jobs:
       - name: Scan application image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          version: v0.76.1
           image-ref: aws-platform-app:security
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
@@ -118,3 +120,44 @@ jobs:
           skip-files: usr/local/lib/python3.13/site-packages/pip/_vendor/bom.cdx.json
           format: table
           exit-code: "0"
+
+      - name: Build reliability-agent security image
+        uses: docker/build-push-action@v7
+        with:
+          context: platform-agent
+          load: true
+          push: false
+          tags: platform-agent:security
+
+      - name: Generate reliability-agent CycloneDX SBOM
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.1
+          scan-type: image
+          image-ref: platform-agent:security
+          scanners: vuln
+          format: cyclonedx
+          output: platform-agent-sbom.cdx.json
+          exit-code: "0"
+
+      - name: Upload reliability-agent SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-agent-sbom
+          path: platform-agent-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Scan reliability-agent security image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.1
+          scan-type: image
+          image-ref: platform-agent:security
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          # Ignore pip's bundled SBOM, not installed packages.
+          skip-files: usr/local/lib/python3.12/site-packages/pip/_vendor/bom.cdx.json
+          format: table
+          exit-code: "1"

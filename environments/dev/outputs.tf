@@ -227,3 +227,23 @@ output "codebuild_github_runner_project_arn" {
   description = "ARN of the CodeBuild-hosted GitHub Actions runner project"
   value       = aws_codebuild_project.github_actions_runner.arn
 }
+
+output "application_domain_name" {
+  description = "Public DNS name used to access the application"
+  value       = var.application_domain_name
+}
+
+output "application_certificate_arn" {
+  description = "ARN of the ACM certificate used by the application load balancer"
+  value       = aws_acm_certificate.application.arn
+}
+
+output "application_certificate_dns_validation" {
+  description = "DNS record required to validate the application ACM certificate"
+
+  value = {
+    name  = one(aws_acm_certificate.application.domain_validation_options).resource_record_name
+    type  = one(aws_acm_certificate.application.domain_validation_options).resource_record_type
+    value = one(aws_acm_certificate.application.domain_validation_options).resource_record_value
+  }
+}

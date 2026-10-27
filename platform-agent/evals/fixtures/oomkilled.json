@@ -1,0 +1,84 @@
+{
+  "name": "oomkilled-container",
+  "deployment": "aws-platform-app",
+  "namespace": "dev",
+  "trace": [
+    {
+      "tool": "get_deployment",
+      "arguments": {
+        "name": "aws-platform-app",
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "selector": "app=aws-platform-app",
+        "generation": 2,
+        "observed_generation": 2,
+        "desired_replicas": 2,
+        "ready_replicas": 1,
+        "unavailable_replicas": 1
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pods",
+      "arguments": {
+        "namespace": "dev",
+        "selector": "app=aws-platform-app"
+      },
+      "success": true,
+      "data": {
+        "pods": [
+          {
+            "name": "app-123",
+            "phase": "Running",
+            "ready_containers": 0,
+            "total_containers": 1,
+            "restarts": 4,
+            "containers": [
+              {
+                "name": "app",
+                "ready": false,
+                "restart_count": 4,
+                "state": "running",
+                "state_reason": null,
+                "last_state": "terminated",
+                "last_reason": "OOMKilled",
+                "last_exit_code": 137
+              }
+            ]
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_events",
+      "arguments": {
+        "namespace": "dev",
+        "limit": 20
+      },
+      "success": true,
+      "data": {
+        "events": []
+      },
+      "error": null
+    }
+  ],
+  "expected": {
+    "confidence": "high",
+    "approval_required": true,
+    "required_diagnosis_terms": [
+      "oomkilled"
+    ],
+    "forbidden_output_terms": [
+      "dns resolution failure",
+      "image pull failure"
+    ],
+    "required_evidence_sources": [
+      "get_deployment",
+      "get_pods"
+    ],
+    "errors": []
+  }
+}

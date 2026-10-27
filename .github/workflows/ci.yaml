@@ -105,6 +105,7 @@ jobs:
           cache-dependency-path: |
             application/requirements.txt
             platform-agent/pyproject.toml
+            platform-agent/requirements.lock
 
       - name: Validate application syntax
         run: |
@@ -122,6 +123,25 @@ jobs:
             pytest
           python -m pip install --editable './platform-agent[dev]'
 
+      - name: Verify reliability-agent dependency lock
+        working-directory: platform-agent
+        env:
+          PIP_DEFAULT_TIMEOUT: "300"
+          PIP_RETRIES: "20"
+          PIP_RESUME_RETRIES: "20"
+        run: |
+          python -m piptools compile \
+            --all-build-deps \
+            --allow-unsafe \
+            --generate-hashes \
+            --no-emit-index-url \
+            --no-emit-trusted-host \
+            --strip-extras \
+            --pip-args="--retries 20 --resume-retries 20 --timeout 300" \
+            --output-file requirements.lock \
+            pyproject.toml
+          git diff --exit-code -- requirements.lock
+
       - name: Run application tests
         working-directory: application
         run: python -m pytest tests --verbose
@@ -129,6 +149,13 @@ jobs:
       - name: Run reliability-agent tests
         working-directory: platform-agent
         run: python -m pytest
+
+      - name: Check Python dependencies
+        run: python -m pip check
+
+      - name: Run offline reliability-agent evaluations
+        working-directory: platform-agent
+        run: platform-agent evaluate evals/fixtures
 
   docker:
     name: Docker build
@@ -147,6 +174,17 @@ jobs:
           context: application
           push: false
           tags: aws-platform-app:ci
+
+      - name: Build reliability-agent image
+        uses: docker/build-push-action@v7
+        with:
+          context: platform-agent
+          load: true
+          push: false
+          tags: platform-agent:ci
+
+      - name: Run containerized agent evaluations
+        run: docker run --rm platform-agent:ci evaluate evals/fixtures
 
   secrets:
     name: Basic credential scan

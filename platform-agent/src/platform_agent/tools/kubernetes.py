@@ -9,6 +9,10 @@ AWS_REGION = "ap-south-1"
 KUBERNETES_CONTEXT = "aws-platform-dev-new"
 DEFAULT_NAMESPACE = "dev"
 COMMAND_TIMEOUT_SECONDS = 20
+MAX_RETURNED_PODS = 50
+MAX_RETURNED_ENDPOINT_ADDRESSES = 100
+MAX_RETURNED_POD_LABELS = 50
+MAX_RETURNED_NETWORK_POLICIES = 50
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 LABEL_SELECTOR_PATTERN = re.compile(
@@ -51,6 +55,66 @@ def validate_label_selector(selector: str) -> str:
 
     return selector
 
+def sanitize_labels(
+    labels: object,
+) -> dict[str, str]:
+    """Return a bounded dictionary of string labels."""
+
+    if not isinstance(labels, dict):
+        return {}
+
+    valid_labels = [
+        (key, value)
+        for key, value in labels.items()
+        if (
+            isinstance(key, str)
+            and key
+            and isinstance(value, str)
+        )
+    ]
+
+    return dict(
+        sorted(valid_labels)[
+            :MAX_RETURNED_POD_LABELS
+        ]
+    )
+
+def container_resource_value(
+    container: dict[str, Any],
+    category: str,
+    resource: str,
+) -> str | None:
+    """Return one sanitized container resource value."""
+
+    resources = container.get("resources")
+
+    if not isinstance(resources, dict):
+        return None
+
+    category_values = resources.get(category)
+
+    if not isinstance(category_values, dict):
+        return None
+
+    value = category_values.get(resource)
+
+    if not isinstance(value, str) or not value:
+        return None
+
+    return value
+
+def integer_or_none(
+    value: object,
+) -> int | None:
+    """Return an integer while rejecting booleans."""
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+    ):
+        return value
+
+    return None
 
 def run_kubectl(arguments: list[str]) -> dict[str, Any]:
     """Execute a predefined read-only kubectl command."""
@@ -124,17 +188,100 @@ def get_pods(
         )
 
     payload = run_kubectl(arguments)
+    items = payload.get("items", [])
+    total_pods = len(items)
+
+    if total_pods > MAX_RETURNED_PODS:
+        items = sorted(
+            items,
+            key=lambda item: (
+                item.get("metadata", {}).get(
+                    "creationTimestamp",
+                    "",
+                )
+            ),
+            reverse=True,
+        )[:MAX_RETURNED_PODS]
+
     pods = []
 
-    for item in payload.get("items", []):
+    for item in items:
         metadata = item.get("metadata", {})
         spec = item.get("spec", {})
         status = item.get("status", {})
         container_statuses = status.get("containerStatuses", [])
+
+        container_summaries = []
+
+        for container in container_statuses:
+            state = container.get("state") or {}
+            last_state = container.get("lastState") or {}
+
+            state_name = next(
+                (
+                    candidate
+                    for candidate in (
+                        "running",
+                        "waiting",
+                        "terminated",
+                    )
+                    if candidate in state
+                ),
+                None,
+            )
+
+            last_state_name = next(
+                (
+                    candidate
+                    for candidate in (
+                        "running",
+                        "waiting",
+                        "terminated",
+                    )
+                    if candidate in last_state
+                ),
+                None,
+            )
+
+            state_details = (
+                state.get(state_name, {})
+                if state_name is not None
+                else {}
+            )
+
+            last_state_details = (
+                last_state.get(last_state_name, {})
+                if last_state_name is not None
+                else {}
+            )
+
+            container_summaries.append(
+                {
+                    "name": container.get("name", "unknown"),
+                    "ready": container.get("ready") is True,
+                    "restart_count": container.get(
+                        "restartCount",
+                        0,
+                    ),
+                    "state": state_name,
+                    "state_reason": state_details.get("reason"),
+                    "last_state": last_state_name,
+                    "last_reason": last_state_details.get("reason"),
+                    "last_exit_code": last_state_details.get(
+                        "exitCode"
+                    ),
+                }
+            )
+
         pods.append(
             {
                 "name": metadata.get("name", "unknown"),
+                "labels": sanitize_labels(
+                    metadata.get("labels")
+                ),
                 "phase": status.get("phase", "Unknown"),
+                "reason": status.get("reason"),
+                "message": status.get("message"),
                 "ready_containers": sum(
                     1
                     for container in container_statuses
@@ -142,8 +289,10 @@ def get_pods(
                 ),
                 "total_containers": len(container_statuses),
                 "restarts": sum(
-                    container.get("restartCount", 0) for container in container_statuses
+                    container.get("restartCount", 0)
+                    for container in container_statuses
                 ),
+                "containers": container_summaries,
                 "node": spec.get("nodeName"),
                 "pod_ip": status.get("podIP"),
             }
@@ -153,7 +302,9 @@ def get_pods(
         "context": KUBERNETES_CONTEXT,
         "namespace": namespace,
         "selector": selector,
-        "count": len(pods),
+        "count": total_pods,
+        "returned_pods": len(pods),
+        "truncated": total_pods > len(pods),
         "pods": pods,
     }
 
@@ -193,8 +344,34 @@ def get_deployment(
 
     containers = [
         {
-            "name": container.get("name", "unknown"),
-            "image": container.get("image", "unknown"),
+            "name": container.get(
+                "name",
+                "unknown",
+            ),
+            "image": container.get(
+                "image",
+                "unknown",
+            ),
+            "cpu_request": container_resource_value(
+                container,
+                "requests",
+                "cpu",
+            ),
+            "memory_request": container_resource_value(
+                container,
+                "requests",
+                "memory",
+            ),
+            "cpu_limit": container_resource_value(
+                container,
+                "limits",
+                "cpu",
+            ),
+            "memory_limit": container_resource_value(
+                container,
+                "limits",
+                "memory",
+            ),
         }
         for container in (
             spec.get("template", {}).get("spec", {}).get("containers", [])
@@ -309,4 +486,602 @@ def get_events(
         "returned_events": len(events),
         "limit": limit,
         "events": events,
+    }
+
+
+def run_kubectl_text(arguments: list[str]) -> str:
+    """Execute a predefined read-only kubectl command returning text."""
+
+    command = [
+        "kubectl",
+        "--context",
+        KUBERNETES_CONTEXT,
+        *arguments,
+        "--request-timeout=15s",
+    ]
+
+    environment = os.environ.copy()
+    environment["AWS_PROFILE"] = AWS_PROFILE
+    environment["AWS_REGION"] = AWS_REGION
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("kubectl is not installed or not in PATH.") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("kubectl command timed out.") from error
+
+    if completed.returncode != 0:
+        error_message = (
+            completed.stderr.strip() or "kubectl returned a non-zero exit code."
+        )
+        raise ValueError(error_message)
+
+    return completed.stdout
+
+
+def get_pod_logs(
+    pod: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    container: str | None = None,
+    tail_lines: int = 100,
+    since_seconds: int = 600,
+) -> dict[str, Any]:
+    """Return bounded recent logs from one Kubernetes pod."""
+
+    pod = validate_dns_label(pod, "pod")
+    namespace = validate_dns_label(namespace, "namespace")
+
+    if container is not None:
+        container = validate_dns_label(container, "container")
+
+    if isinstance(tail_lines, bool) or not isinstance(tail_lines, int):
+        raise TypeError("tail_lines must be an integer.")
+
+    if tail_lines < 1 or tail_lines > 500:
+        raise ValueError("tail_lines must be between 1 and 500.")
+
+    if isinstance(since_seconds, bool) or not isinstance(since_seconds, int):
+        raise TypeError("since_seconds must be an integer.")
+
+    if since_seconds < 1 or since_seconds > 86400:
+        raise ValueError("since_seconds must be between 1 and 86400.")
+
+    arguments = [
+        "logs",
+        pod,
+        "--namespace",
+        namespace,
+        f"--tail={tail_lines}",
+        f"--since={since_seconds}s",
+        "--timestamps=true",
+    ]
+
+    if container is not None:
+        arguments.extend(
+            [
+                "--container",
+                container,
+            ]
+        )
+
+    output = run_kubectl_text(arguments)
+    maximum_characters = 50000
+    truncated = len(output) > maximum_characters
+
+    if truncated:
+        output = output[-maximum_characters:]
+
+    lines = output.splitlines()
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "pod": pod,
+        "container": container,
+        "tail_lines": tail_lines,
+        "since_seconds": since_seconds,
+        "line_count": len(lines),
+        "truncated": truncated,
+        "logs": lines,
+    }
+
+def get_service_endpoints(
+    service: str,
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized Service and EndpointSlice evidence."""
+
+    service = validate_dns_label(
+        service,
+        "service",
+    )
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    service_payload = run_kubectl(
+        [
+            "get",
+            "service",
+            service,
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    endpoint_slice_payload = run_kubectl(
+        [
+            "get",
+            "endpointslices",
+            "--namespace",
+            namespace,
+            "--selector",
+            (
+                "kubernetes.io/service-name="
+                f"{service}"
+            ),
+        ]
+    )
+
+    service_spec = service_payload.get(
+        "spec",
+        {},
+    )
+    raw_selector = service_spec.get(
+        "selector",
+        {},
+    )
+
+    selector = (
+        {
+            str(key): str(value)
+            for key, value in raw_selector.items()
+        }
+        if isinstance(raw_selector, dict)
+        else {}
+    )
+
+    ports: list[dict[str, Any]] = []
+
+    for port in service_spec.get("ports", []):
+        if not isinstance(port, dict):
+            continue
+
+        ports.append(
+            {
+                "name": port.get("name"),
+                "protocol": port.get(
+                    "protocol",
+                    "TCP",
+                ),
+                "port": port.get("port"),
+                "target_port": port.get(
+                    "targetPort"
+                ),
+            }
+        )
+
+    endpoint_slices = endpoint_slice_payload.get(
+        "items",
+        [],
+    )
+
+    ready_endpoint_count = 0
+    not_ready_endpoint_count = 0
+    ready_addresses: list[str] = []
+    not_ready_addresses: list[str] = []
+
+    for endpoint_slice in endpoint_slices:
+        if not isinstance(endpoint_slice, dict):
+            continue
+
+        for endpoint in endpoint_slice.get(
+            "endpoints",
+            [],
+        ):
+            if not isinstance(endpoint, dict):
+                continue
+
+            conditions = endpoint.get(
+                "conditions",
+                {},
+            )
+            ready = (
+                not isinstance(conditions, dict)
+                or conditions.get("ready") is not False
+            )
+
+            addresses = [
+                address
+                for address in endpoint.get(
+                    "addresses",
+                    [],
+                )
+                if isinstance(address, str)
+            ]
+
+            if ready:
+                ready_endpoint_count += 1
+
+                remaining = (
+                    MAX_RETURNED_ENDPOINT_ADDRESSES
+                    - len(ready_addresses)
+                )
+                ready_addresses.extend(
+                    addresses[:remaining]
+                )
+            else:
+                not_ready_endpoint_count += 1
+
+                remaining = (
+                    MAX_RETURNED_ENDPOINT_ADDRESSES
+                    - len(not_ready_addresses)
+                )
+                not_ready_addresses.extend(
+                    addresses[:remaining]
+                )
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "service": service,
+        "type": service_spec.get(
+            "type",
+            "ClusterIP",
+        ),
+        "selector": selector,
+        "ports": ports,
+        "endpoint_slice_count": len(
+            endpoint_slices
+        ),
+        "ready_endpoint_count": (
+            ready_endpoint_count
+        ),
+        "not_ready_endpoint_count": (
+            not_ready_endpoint_count
+        ),
+        "ready_addresses": ready_addresses,
+        "not_ready_addresses": (
+            not_ready_addresses
+        ),
+    }
+
+def get_hpa(
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized HPA configuration and status."""
+
+    name = validate_dns_label(name, "name")
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    payload = run_kubectl(
+        [
+            "get",
+            "hpa",
+            name,
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    metadata = payload.get("metadata", {})
+    spec = payload.get("spec", {})
+    status = payload.get("status", {})
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    if not isinstance(spec, dict):
+        spec = {}
+
+    if not isinstance(status, dict):
+        status = {}
+
+    target_ref = spec.get(
+        "scaleTargetRef",
+        {},
+    )
+
+    if not isinstance(target_ref, dict):
+        target_ref = {}
+
+    target_cpu_utilization = None
+    metrics = spec.get("metrics", [])
+
+    if not isinstance(metrics, list):
+        metrics = []
+
+    for metric in metrics:
+        if (
+            not isinstance(metric, dict)
+            or metric.get("type") != "Resource"
+        ):
+            continue
+
+        resource = metric.get("resource", {})
+
+        if (
+            not isinstance(resource, dict)
+            or resource.get("name") != "cpu"
+        ):
+            continue
+
+        target = resource.get("target", {})
+
+        if not isinstance(target, dict):
+            continue
+
+        target_cpu_utilization = integer_or_none(
+            target.get("averageUtilization")
+        )
+        break
+
+    current_cpu_utilization = None
+    current_metrics = status.get(
+        "currentMetrics",
+        [],
+    )
+
+    if not isinstance(current_metrics, list):
+        current_metrics = []
+
+    for metric in current_metrics:
+        if (
+            not isinstance(metric, dict)
+            or metric.get("type") != "Resource"
+        ):
+            continue
+
+        resource = metric.get("resource", {})
+
+        if (
+            not isinstance(resource, dict)
+            or resource.get("name") != "cpu"
+        ):
+            continue
+
+        current = resource.get("current", {})
+
+        if not isinstance(current, dict):
+            continue
+
+        current_cpu_utilization = integer_or_none(
+            current.get("averageUtilization")
+        )
+        break
+
+    conditions = []
+
+    raw_conditions = status.get(
+        "conditions",
+        [],
+    )
+
+    if not isinstance(raw_conditions, list):
+        raw_conditions = []
+
+    for condition in raw_conditions[:20]:
+        if not isinstance(condition, dict):
+            continue
+
+        conditions.append(
+            {
+                "type": condition.get("type"),
+                "status": condition.get("status"),
+                "reason": condition.get("reason"),
+                "message": condition.get("message"),
+                "last_transition_time": (
+                    condition.get(
+                        "lastTransitionTime"
+                    )
+                ),
+            }
+        )
+
+    result_name = metadata.get("name", name)
+
+    if (
+        not isinstance(result_name, str)
+        or not result_name
+    ):
+        result_name = name
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "name": result_name,
+        "target": {
+            "kind": target_ref.get("kind"),
+            "name": target_ref.get("name"),
+        },
+        "min_replicas": integer_or_none(
+            spec.get("minReplicas")
+        ),
+        "max_replicas": integer_or_none(
+            spec.get("maxReplicas")
+        ),
+        "current_replicas": integer_or_none(
+            status.get("currentReplicas")
+        ),
+        "desired_replicas": integer_or_none(
+            status.get("desiredReplicas")
+        ),
+        "target_cpu_utilization": (
+            target_cpu_utilization
+        ),
+        "current_cpu_utilization": (
+            current_cpu_utilization
+        ),
+        "conditions": conditions,
+    }
+
+def get_network_policies(
+    namespace: str = DEFAULT_NAMESPACE,
+) -> dict[str, Any]:
+    """Return sanitized NetworkPolicies in one namespace."""
+
+    namespace = validate_dns_label(
+        namespace,
+        "namespace",
+    )
+
+    payload = run_kubectl(
+        [
+            "get",
+            "networkpolicies",
+            "--namespace",
+            namespace,
+        ]
+    )
+
+    items = payload.get("items", [])
+
+    if not isinstance(items, list):
+        raise TypeError(
+            "kubectl returned invalid NetworkPolicy items."
+        )
+
+    total_policies = len(items)
+
+    valid_items = [
+        item
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+    valid_items.sort(
+        key=lambda item: (
+            item.get("metadata", {}).get(
+                "name",
+                "",
+            )
+        )
+    )
+
+    policies = []
+
+    for item in valid_items[
+        :MAX_RETURNED_NETWORK_POLICIES
+    ]:
+        metadata = item.get("metadata", {})
+        spec = item.get("spec", {})
+
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if not isinstance(spec, dict):
+            spec = {}
+
+        pod_selector = spec.get(
+            "podSelector",
+            {},
+        )
+
+        if not isinstance(pod_selector, dict):
+            pod_selector = {}
+
+        match_labels = sanitize_labels(
+            pod_selector.get("matchLabels")
+        )
+
+        match_expressions = pod_selector.get(
+            "matchExpressions"
+        )
+
+        has_match_expressions = (
+            isinstance(match_expressions, list)
+            and bool(match_expressions)
+        )
+
+        raw_policy_types = spec.get(
+            "policyTypes"
+        )
+
+        if isinstance(raw_policy_types, list):
+            policy_types = [
+                policy_type
+                for policy_type in raw_policy_types
+                if policy_type
+                in {
+                    "Ingress",
+                    "Egress",
+                }
+            ]
+        else:
+            policy_types = [
+                "Ingress",
+            ]
+
+            if "egress" in spec:
+                policy_types.append("Egress")
+
+        ingress = spec.get("ingress", [])
+        egress = spec.get("egress", [])
+
+        ingress_rules = (
+            ingress
+            if isinstance(ingress, list)
+            else []
+        )
+        egress_rules = (
+            egress
+            if isinstance(egress, list)
+            else []
+        )
+
+        name = metadata.get(
+            "name",
+            "unknown",
+        )
+
+        if not isinstance(name, str) or not name:
+            name = "unknown"
+
+        policies.append(
+            {
+                "name": name,
+                "pod_selector": match_labels,
+                "has_match_expressions": (
+                    has_match_expressions
+                ),
+                "policy_types": policy_types,
+                "ingress_rule_count": len(
+                    ingress_rules
+                ),
+                "egress_rule_count": len(
+                    egress_rules
+                ),
+                "default_deny_ingress": (
+                    "Ingress" in policy_types
+                    and not ingress_rules
+                ),
+                "default_deny_egress": (
+                    "Egress" in policy_types
+                    and not egress_rules
+                ),
+            }
+        )
+
+    return {
+        "context": KUBERNETES_CONTEXT,
+        "namespace": namespace,
+        "count": total_policies,
+        "returned_policies": len(policies),
+        "truncated": (
+            total_policies > len(policies)
+        ),
+        "policies": policies,
     }

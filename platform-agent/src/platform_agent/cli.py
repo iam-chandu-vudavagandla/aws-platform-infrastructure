@@ -1,4 +1,5 @@
 import argparse
+import json
 from collections.abc import Sequence
 
 from platform_agent.agent import (
@@ -8,7 +9,7 @@ from platform_agent.agent import (
 from platform_agent.kubernetes_investigation import (
     run_kubernetes_investigation,
 )
-
+from platform_agent.evaluation import evaluate_directory
 
 def positive_integer(value: str) -> int:
     """Validate positive integer command-line arguments."""
@@ -90,6 +91,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum recent events to inspect (default: 20).",
     )
 
+    kubernetes_parser.add_argument(
+        "--hpa-name",
+        default=None,
+        help=(
+            "Optional HorizontalPodAutoscaler name "
+            "to include in the investigation."
+        ),
+    )
+
+    evaluation_parser = subparsers.add_parser(
+        "evaluate",
+        help=(
+            "Run offline incident evaluation fixtures."
+        ),
+    )
+
+    evaluation_parser.add_argument(
+        "fixture_directory",
+        nargs="?",
+        default="evals/fixtures",
+        help=(
+            "Directory containing JSON evaluation fixtures "
+            "(default: evals/fixtures)."
+        ),
+    )
+
     return parser
 
 
@@ -112,10 +139,49 @@ def main(argv: Sequence[str] | None = None) -> int:
             name=arguments.deployment,
             namespace=arguments.namespace,
             event_limit=arguments.event_limit,
+            hpa_name=arguments.hpa_name,
         )
-
         print(report.model_dump_json(indent=2))
         return 2 if report.errors else 0
+
+    if arguments.command == "evaluate":
+        try:
+            results = evaluate_directory(
+                arguments.fixture_directory
+            )
+        except (OSError, ValueError) as error:
+            payload = {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "results": [],
+                "errors": [
+                    str(error),
+                ],
+            }
+
+            print(json.dumps(payload, indent=2))
+            return 2
+        passed = sum(
+            1
+            for result in results
+            if result.passed
+        )
+        failed = len(results) - passed
+
+        payload = {
+            "total": len(results),
+            "passed": passed,
+            "failed": failed,
+            "results": [
+                result.model_dump(mode="json")
+                for result in results
+            ],
+        }
+
+        print(json.dumps(payload, indent=2))
+
+        return 1 if failed else 0
 
     parser.error("Unsupported command.")
     return 2

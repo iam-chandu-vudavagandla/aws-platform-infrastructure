@@ -58,3 +58,38 @@ def test_incident_report_serializes_to_json() -> None:
     assert payload["confidence"] == "high"
     assert payload["approval_required"] is False
     assert payload["tool_trace"][0]["tool"] == "get_pods"
+
+
+def test_llm_diagnosis_serializes_to_json() -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    diagnosis = LLMDiagnosis(
+        summary="The Kubernetes deployment is degraded.",
+        probable_cause=(
+            "One replica is unavailable and the affected pod "
+            "is failing readiness checks."
+        ),
+        confidence=Confidence.HIGH,
+        recommended_action=(
+            "Review the affected pod logs and dependency connectivity."
+        ),
+    )
+
+    payload = diagnosis.model_dump(mode="json")
+
+    assert payload["summary"] == "The Kubernetes deployment is degraded."
+    assert payload["confidence"] == "high"
+    assert "readiness" in payload["probable_cause"]
+
+
+def test_llm_diagnosis_rejects_unexpected_fields() -> None:
+    from platform_agent.contracts import LLMDiagnosis
+
+    with pytest.raises(ValidationError):
+        LLMDiagnosis(
+            summary="Deployment is unhealthy.",
+            probable_cause="Readiness checks are failing.",
+            confidence=Confidence.HIGH,
+            recommended_action="Review the workload.",
+            shell_command="kubectl delete pod app-123",
+        )

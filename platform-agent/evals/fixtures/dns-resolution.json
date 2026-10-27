@@ -1,0 +1,107 @@
+{
+  "name": "dns-resolution-failure",
+  "deployment": "aws-platform-app",
+  "namespace": "dev",
+  "trace": [
+    {
+      "tool": "get_deployment",
+      "arguments": {
+        "name": "aws-platform-app",
+        "namespace": "dev"
+      },
+      "success": true,
+      "data": {
+        "selector": "app=aws-platform-app",
+        "generation": 2,
+        "observed_generation": 2,
+        "desired_replicas": 2,
+        "ready_replicas": 0,
+        "unavailable_replicas": 1
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pods",
+      "arguments": {
+        "namespace": "dev",
+        "selector": "app=aws-platform-app"
+      },
+      "success": true,
+      "data": {
+        "pods": [
+          {
+            "name": "app-123",
+            "phase": "Running",
+            "ready_containers": 0,
+            "total_containers": 1,
+            "restarts": 1,
+            "containers": [
+              {
+                "name": "app",
+                "ready": false,
+                "restart_count": 1,
+                "state": "running",
+                "state_reason": null,
+                "last_state": null,
+                "last_reason": null,
+                "last_exit_code": null
+              }
+            ]
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "tool": "get_events",
+      "arguments": {
+        "namespace": "dev",
+        "limit": 20
+      },
+      "success": true,
+      "data": {
+        "events": []
+      },
+      "error": null
+    },
+    {
+      "tool": "get_pod_logs",
+      "arguments": {
+        "pod": "app-123",
+        "namespace": "dev",
+        "tail_lines": 100,
+        "since_seconds": 600
+      },
+      "success": true,
+      "data": {
+        "pod": "app-123",
+        "line_count": 1,
+        "truncated": false,
+        "logs": [
+          "dial tcp: lookup database.default.svc.cluster.local on 10.100.0.10:53: no such host"
+        ]
+      },
+      "error": null
+    }
+  ],
+  "expected": {
+    "confidence": "high",
+    "approval_required": true,
+    "required_diagnosis_terms": [
+      "dns",
+      "database.default.svc.cluster.local",
+      "no such host"
+    ],
+    "forbidden_output_terms": [
+      "oomkilled",
+      "image pull failure",
+      "default-deny egress"
+    ],
+    "required_evidence_sources": [
+      "get_deployment",
+      "get_pods",
+      "get_pod_logs"
+    ],
+    "errors": []
+  }
+}

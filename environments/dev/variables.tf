@@ -146,3 +146,20 @@ variable "rds_backup_retention_period" {
     error_message = "rds_backup_retention_period must be between 0 and 35."
   }
 }
+
+variable "application_domain_name" {
+  description = "Public DNS name used to access the development application"
+  type        = string
+  default     = "chandu.is-a.dev"
+
+  validation {
+    condition = can(
+      regex(
+        "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$",
+        var.application_domain_name
+      )
+    )
+
+    error_message = "application_domain_name must be a valid lowercase DNS name."
+  }
+}
