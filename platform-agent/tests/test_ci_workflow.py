@@ -32,6 +32,7 @@ def test_python_ci_job_runs_offline_agent_quality_gate() -> None:
     assert "AWS_SECRET_ACCESS_KEY" not in python_job
     assert "configure-aws-credentials" not in python_job
 
+
 def test_docker_ci_job_builds_and_evaluates_agent_image() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
@@ -84,3 +85,25 @@ def test_python_ci_job_verifies_agent_dependency_lock() -> None:
     assert "--generate-hashes" in lock_step
     assert "--output-file requirements.lock" in lock_step
     assert "git diff --exit-code -- requirements.lock" in lock_step
+
+
+def test_kubernetes_ci_validates_rendered_manifests() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        "Validate rendered Kubernetes schemas"
+        in workflow
+    )
+    assert (
+        "ghcr.io/yannh/kubeconform:v0.8.0-alpine"
+        in workflow
+    )
+    assert "kubernetes/base" in workflow
+    assert "kubernetes/overlays/dev" in workflow
+    assert "kubernetes/overlays/local" in workflow
+    assert (
+        "-kubernetes-version 1.35.0"
+        in workflow
+    )
+    assert "-strict" in workflow
+    assert "-summary" in workflow

@@ -257,7 +257,7 @@ python -m pip check
 
 ## Current validation
 
-The project currently has 139 automated tests covering:
+The project currently has 140 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries
@@ -276,6 +276,7 @@ The project currently has 139 automated tests covering:
 - Hashed dependency installation
 - Dependency-lock freshness enforcement
 - Container and security workflow contracts
+- Kubernetes manifest schema-validation CI contract
 
 The automated suite uses local fixtures and mocked Kubernetes responses,
 so it does not require active AWS resources.

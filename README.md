@@ -90,7 +90,7 @@ Automation scripts provide a repeatable workflow:
 GitHub Actions validates every pull request with five independent jobs:
 
 * Terraform formatting and validation
-* Kubernetes and Kustomize rendering
+* Kubernetes and Kustomize rendering with strict Kubernetes 1.35 schema validation
 * Python syntax and reliability-agent tests
 * Docker image build
 * Basic credential scanning
@@ -307,7 +307,7 @@ Application deployments use:
 The project has been validated through:
 
 * Terraform formatting and configuration validation
-* Kustomize rendering for base, development, and local environments
+* Kustomize rendering and strict Kubernetes 1.35 schema validation for base, development, and local environments
 * Docker application builds
 * Minikube deployment
 * Application smoke tests
@@ -317,11 +317,10 @@ The project has been validated through:
 
 ## Roadmap
 
-* Add application unit and integration tests
-* Add container vulnerability scanning
-* Add Terraform security scanning
-* Add Kubernetes policy validation
-* Add observability with metrics, logs, and dashboards
-* Expand the reliability agent with logs, metrics and AWS metadata
-* Add evaluation fixtures for repeatable agent testing
-* Add automated release versioning
+* Add semantic Kubernetes policy-as-code validation
+* Add Prometheus metrics, Grafana dashboards and operational alerts
+* Promote selected advisory security scans to blocking quality gates
+* Sign release images and publish verifiable build provenance
+* Expand the reliability agent with read-only AWS metadata
+* Add automated release versioning and changelog generation
+* Complete the final project demo and portfolio documentation

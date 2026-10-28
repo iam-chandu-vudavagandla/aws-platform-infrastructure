@@ -86,6 +86,28 @@ jobs:
 
       - name: Render local overlay
         run: kubectl kustomize kubernetes/overlays/local >/dev/null
+
+      - name: Validate rendered Kubernetes schemas
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for manifest_path in \
+            kubernetes/base \
+            kubernetes/overlays/dev \
+            kubernetes/overlays/local
+          do
+            echo "Validating ${manifest_path}"
+
+            kubectl kustomize "${manifest_path}" |
+              docker run \
+                --rm \
+                --interactive \
+                ghcr.io/yannh/kubeconform:v0.8.0-alpine \
+                -kubernetes-version 1.35.0 \
+                -strict \
+                -summary
+          done
   python:
     name: Python validation
     runs-on: ubuntu-latest
