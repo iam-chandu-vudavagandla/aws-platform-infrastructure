@@ -87,10 +87,44 @@ jobs:
       - name: Render local overlay
         run: kubectl kustomize kubernetes/overlays/local >/dev/null
 
+      - name: Run Kubernetes policy checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for manifest_path in \
+            kubernetes/base \
+            kubernetes/overlays/dev \
+            kubernetes/overlays/local
+          do
+            echo "Checking policies for ${manifest_path}"
+
+            kubectl kustomize "${manifest_path}" |
+              docker run \
+                --rm \
+                --interactive \
+                --volume \
+                "${PWD}/policies/kubernetes:/policy:ro" \
+                openpolicyagent/conftest:v0.71.1 \
+                test \
+                --policy /policy \
+                -
+          done
+
       - name: Validate rendered Kubernetes schemas
         shell: bash
         run: |
           set -Eeuo pipefail
+
+          echo "Verifying Kubernetes policy behavior"
+
+          docker run \
+            --rm \
+            --volume \
+            "${PWD}/policies/kubernetes:/policy:ro" \
+            openpolicyagent/conftest:v0.71.1 \
+            verify \
+            --policy /policy
 
           for manifest_path in \
             kubernetes/base \
