@@ -239,6 +239,10 @@ The Security workflow builds the reliability-agent image, publishes a
 CycloneDX SBOM artifact and blocks fixable HIGH or CRITICAL
 vulnerabilities detected by Trivy.
 
+The Kubernetes validation job renders every environment, validates
+against strict Kubernetes 1.35 schemas, runs Rego policy unit tests and
+enforces the policies with Conftest.
+
 ## Development
 
 ```bash
@@ -257,7 +261,7 @@ python -m pip check
 
 ## Current validation
 
-The project currently has 140 automated tests covering:
+The project currently has 141 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries

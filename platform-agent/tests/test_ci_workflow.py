@@ -107,3 +107,57 @@ def test_kubernetes_ci_validates_rendered_manifests() -> None:
     )
     assert "-strict" in workflow
     assert "-summary" in workflow
+
+
+
+def test_kubernetes_ci_enforces_workload_policies() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    policy_file = (
+        REPOSITORY_ROOT
+        / "policies"
+        / "kubernetes"
+        / "workload.rego"
+    )
+
+    policy_test_file = (
+        REPOSITORY_ROOT
+        / "policies"
+        / "kubernetes"
+        / "workload_test.rego"
+    )
+
+    assert policy_file.is_file()
+    assert policy_test_file.is_file()
+
+    policy = policy_file.read_text(encoding="utf-8")
+    policy_tests = policy_test_file.read_text(
+        encoding="utf-8",
+    )
+
+    assert "Run Kubernetes policy checks" in workflow
+    assert (
+        "openpolicyagent/conftest:v0.71.1"
+        in workflow
+    )
+    assert "policies/kubernetes" in workflow
+
+    assert "runAsNonRoot" in policy
+    assert "allowPrivilegeEscalation" in policy
+    assert "privileged" in policy
+    assert "resources" in policy
+    assert "readinessProbe" in policy
+    assert "livenessProbe" in policy
+    assert "@sha256:" in policy
+    assert "verify" in workflow
+    assert (
+        "test_secure_application_workload_is_allowed"
+        in policy_tests
+    )
+    assert (
+        "test_privileged_container_is_denied"
+        in policy_tests
+    )
+    assert (
+        "test_unpinned_development_image_is_denied"
+        in policy_tests
+    )
