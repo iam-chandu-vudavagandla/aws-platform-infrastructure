@@ -9,6 +9,7 @@ description = "A policy-controlled investigation agent for AWS, EKS, and Terrafo
 requires-python = ">=3.11"
 dependencies = [
     "ollama>=0.6,<1",
+    "prometheus-client>=0.26,<1",
     "pydantic>=2,<3",
 ]
 

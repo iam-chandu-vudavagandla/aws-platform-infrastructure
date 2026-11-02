@@ -1,15 +1,23 @@
 import argparse
 import json
 from collections.abc import Sequence
+from time import perf_counter
 
 from platform_agent.agent import (
     DEFAULT_MAX_TOOL_CALLS,
     run_terraform_module_investigation,
 )
+from platform_agent.evaluation import evaluate_directory
 from platform_agent.kubernetes_investigation import (
     run_kubernetes_investigation,
 )
-from platform_agent.evaluation import evaluate_directory
+from platform_agent.observability import (
+    AgentMetrics,
+    activate_metrics,
+    emit_event,
+    reset_metrics,
+)
+
 
 def positive_integer(value: str) -> int:
     """Validate positive integer command-line arguments."""
@@ -40,6 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="platform-agent",
         description=(
             "Read-only reliability investigation agent for AWS platform infrastructure."
+        ),
+    )
+
+    parser.add_argument(
+        "--metrics-file",
+        help=(
+            "Write Prometheus text-format metrics "
+            "to this file."
         ),
     )
 
@@ -124,6 +140,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the platform agent CLI."""
     parser = build_parser()
     arguments = parser.parse_args(argv)
+    metrics = AgentMetrics(arguments.metrics_file)
+    metrics_token = activate_metrics(metrics)
+
+    command_started_at = perf_counter()
+
+    emit_event(
+        "command_started",
+        command=arguments.command,
+    )
+
+    def finish(exit_code: int) -> int:
+        success = exit_code == 0
+        status = "success" if success else "error"
+        duration_seconds = round(
+            perf_counter() - command_started_at,
+            6,
+        )
+
+        emit_event(
+            "command_completed",
+            level="info" if success else "error",
+            command=arguments.command,
+            exit_code=exit_code,
+            success=success,
+            duration_seconds=duration_seconds,
+        )
+
+        metrics.record_command(
+            command=arguments.command,
+            status=status,
+            duration_seconds=duration_seconds,
+        )
+        try:
+            metrics.write()
+        finally:
+            reset_metrics(metrics_token)
+        return exit_code
 
     if arguments.command == "inspect-module":
         report = run_terraform_module_investigation(
@@ -132,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         print(report.model_dump_json(indent=2))
-        return 2 if report.errors else 0
+        return finish(2 if report.errors else 0)
 
     if arguments.command == "investigate-kubernetes":
         report = run_kubernetes_investigation(
@@ -142,7 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             hpa_name=arguments.hpa_name,
         )
         print(report.model_dump_json(indent=2))
-        return 2 if report.errors else 0
+        return finish(2 if report.errors else 0)
 
     if arguments.command == "evaluate":
         try:
@@ -161,7 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
 
             print(json.dumps(payload, indent=2))
-            return 2
+            return finish(2)
         passed = sum(
             1
             for result in results
@@ -181,7 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print(json.dumps(payload, indent=2))
 
-        return 1 if failed else 0
+        return finish(1 if failed else 0)
 
     parser.error("Unsupported command.")
     return 2
