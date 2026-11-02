@@ -190,6 +190,38 @@ Every investigation must return:
 
 Reports are validated through strict Pydantic contracts.
 
+## Operational observability contract
+
+The agent must preserve separate output channels:
+
+- Standard output contains the final structured report.
+- Standard error contains newline-delimited JSON operational events.
+
+The required lifecycle event types are:
+
+- `command_started`
+- `command_completed`
+- `tool_started`
+- `tool_completed`
+
+Completion events must include success state and non-negative duration.
+Command completion events must include the process exit code.
+
+Operational events must not contain tool arguments, returned evidence,
+credentials, kubeconfig content, Secret values or model prompts.
+
+When `--metrics-file` is provided, the agent must write a
+per-invocation Prometheus text-format snapshot containing:
+
+- Command counts labelled by command and status
+- Command-duration histograms labelled by command
+- Tool-call counts labelled by tool and status
+- Tool-duration histograms labelled by tool
+
+Metrics collection must use an invocation-local registry so repeated
+commands in one Python process do not share or duplicate collectors.
+When the option is omitted, no metrics file is written.
+
 ## Failure and stop conditions
 
 The agent must stop or return a bounded failure report when:

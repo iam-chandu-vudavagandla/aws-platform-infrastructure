@@ -139,6 +139,47 @@ or contradicts important facts, the deterministic report is returned.
 The LLM cannot execute tools directly. All tool execution passes through
 the explicit Python allowlist.
 
+## Operational observability
+
+The CLI separates its machine-readable outputs:
+
+- Standard output contains only the final report JSON.
+- Standard error contains newline-delimited JSON lifecycle events.
+
+Lifecycle events include:
+
+- `command_started`
+- `command_completed`
+- `tool_started`
+- `tool_completed`
+
+Events record timestamps, command or tool names, success state, exit
+codes and durations. Tool arguments and returned evidence are excluded
+from operational events to avoid duplicating potentially sensitive data.
+
+Use the global `--metrics-file` option before the subcommand to write a
+per-invocation Prometheus text-format snapshot:
+
+```bash
+platform-agent \
+  --metrics-file /tmp/platform-agent.prom \
+  inspect-module \
+  modules/vpc \
+  >/tmp/platform-agent-report.json \
+  2>/tmp/platform-agent-events.jsonl
+```
+
+The metrics snapshot contains:
+
+- `platform_agent_commands_total`
+- `platform_agent_command_duration_seconds`
+- `platform_agent_tool_calls_total`
+- `platform_agent_tool_duration_seconds`
+
+No metrics file is created when `--metrics-file` is omitted. The file
+represents one CLI invocation and is overwritten on the next invocation
+using the same path.
+
 ## Safety controls
 
 - Read-only tools only
@@ -220,6 +261,7 @@ python -m piptools compile \
 ```
 Review and commit `pyproject.toml` and `requirements.lock` together.
 Do not edit the generated lock manually.
+
 ## Continuous integration
 
 The GitHub Actions `Python validation` job installs the application and
@@ -261,7 +303,7 @@ python -m pip check
 
 ## Current validation
 
-The project currently has 141 automated tests covering:
+The project currently has 144 automated tests covering:
 
 - Strict Pydantic contracts
 - Terraform path boundaries
@@ -277,6 +319,8 @@ The project currently has 141 automated tests covering:
 - Deterministic reports
 - LLM evidence-preservation guardrails
 - CLI behavior
+- Structured command and tool lifecycle events
+- Prometheus command and tool metrics
 - Hashed dependency installation
 - Dependency-lock freshness enforcement
 - Container and security workflow contracts

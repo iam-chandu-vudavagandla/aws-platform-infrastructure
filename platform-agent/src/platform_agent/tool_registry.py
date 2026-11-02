@@ -1,7 +1,12 @@
 from collections.abc import Callable
+from time import perf_counter
 from typing import Any
 
 from platform_agent.contracts import ToolResult
+from platform_agent.observability import (
+    emit_event,
+    record_tool_metrics,
+)
 from platform_agent.tools.kubernetes import (
     get_deployment,
     get_events,
@@ -36,51 +41,102 @@ def execute_tool(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> ToolResult:
-    """Validate and execute an allowlisted tool."""
+    """Validate, execute, and observe an allowlisted tool."""
 
-    received_arguments = arguments if isinstance(arguments, dict) else {}
+    tool_name = name or "unknown"
+    tool_started_at = perf_counter()
+
+    emit_event(
+        "tool_started",
+        tool=tool_name,
+    )
+
+    def finish(result: ToolResult) -> ToolResult:
+        success = result.success
+        status = "success" if success else "error"
+        duration_seconds = round(
+            perf_counter() - tool_started_at,
+            6,
+        )
+
+        emit_event(
+            "tool_completed",
+            level="info" if success else "error",
+            tool=tool_name,
+            success=success,
+            duration_seconds=duration_seconds,
+        )
+
+        record_tool_metrics(
+            tool=tool_name,
+            status=status,
+            duration_seconds=duration_seconds,
+        )
+
+        return result
+
+    received_arguments = (
+        arguments
+        if isinstance(arguments, dict)
+        else {}
+    )
 
     if name not in TOOLS:
-        return ToolResult(
-            tool=name or "unknown",
-            arguments=received_arguments,
-            success=False,
-            error=f"Tool '{name}' is not allowed.",
+        return finish(
+            ToolResult(
+                tool=tool_name,
+                arguments=received_arguments,
+                success=False,
+                error=f"Tool '{name}' is not allowed.",
+            )
         )
 
     if arguments is None:
         arguments = {}
 
     if not isinstance(arguments, dict):
-        return ToolResult(
-            tool=name,
-            arguments={},
-            success=False,
-            error="Tool arguments must be a dictionary.",
+        return finish(
+            ToolResult(
+                tool=tool_name,
+                arguments={},
+                success=False,
+                error=(
+                    "Tool arguments must be a dictionary."
+                ),
+            )
         )
 
     try:
         data = TOOLS[name](**arguments)
 
-        return ToolResult(
-            tool=name,
-            arguments=arguments,
-            success=True,
-            data=data,
+        return finish(
+            ToolResult(
+                tool=tool_name,
+                arguments=arguments,
+                success=True,
+                data=data,
+            )
         )
 
     except (TypeError, ValueError, OSError) as error:
-        return ToolResult(
-            tool=name,
-            arguments=arguments,
-            success=False,
-            error=str(error),
+        return finish(
+            ToolResult(
+                tool=tool_name,
+                arguments=arguments,
+                success=False,
+                error=str(error),
+            )
         )
 
     except Exception:  # noqa: BLE001
-        return ToolResult(
-            tool=name,
-            arguments=arguments,
-            success=False,
-            error="The tool failed with an unexpected internal error.",
+        return finish(
+            ToolResult(
+                tool=tool_name,
+                arguments=arguments,
+                success=False,
+                error=(
+                    "The tool failed with an unexpected "
+                    "internal error."
+                ),
+            )
         )

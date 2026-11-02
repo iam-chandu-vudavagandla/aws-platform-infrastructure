@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from platform_agent import cli
 from platform_agent.contracts import Confidence, IncidentReport
 from platform_agent.tools import terraform as terraform_tools
@@ -321,7 +322,27 @@ def test_evaluate_missing_directory_returns_structured_error(
             )
         ],
     }
-    assert captured.err == ""
+    events = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip()
+    ]
+
+    assert [
+        event["event"]
+        for event in events
+    ] == [
+        "command_started",
+        "command_completed",
+    ]
+
+    assert events[0]["command"] == "evaluate"
+    assert events[0]["level"] == "info"
+    assert events[1]["command"] == "evaluate"
+    assert events[1]["level"] == "error"
+    assert events[1]["exit_code"] == 2
+    assert events[1]["success"] is False
+    assert events[1]["duration_seconds"] >= 0
 
 def test_evaluate_malformed_fixture_returns_structured_error(
     tmp_path: Path,
@@ -351,4 +372,207 @@ def test_evaluate_malformed_fixture_returns_structured_error(
     assert payload["results"] == []
     assert len(payload["errors"]) == 1
     assert "Invalid JSON" in payload["errors"][0]
-    assert captured.err == ""
+    events = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip()
+    ]
+
+    assert [
+        event["event"]
+        for event in events
+    ] == [
+        "command_started",
+        "command_completed",
+    ]
+
+    assert events[0]["command"] == "evaluate"
+    assert events[0]["level"] == "info"
+
+    assert events[1]["command"] == "evaluate"
+    assert events[1]["level"] == "error"
+    assert events[1]["exit_code"] == 2
+    assert events[1]["success"] is False
+    assert events[1]["duration_seconds"] >= 0
+
+def test_cli_emits_structured_lifecycle_events(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = IncidentReport(
+        summary="Deployment is healthy.",
+        probable_cause="No health problems were detected.",
+        evidence=[],
+        confidence=Confidence.HIGH,
+        recommended_action="Continue monitoring.",
+        approval_required=False,
+        tool_trace=[],
+        errors=[],
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "run_kubernetes_investigation",
+        lambda **kwargs: report,
+    )
+
+    exit_code = cli.main(
+        [
+            "investigate-kubernetes",
+            "aws-platform-app",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    events = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip()
+    ]
+
+    assert exit_code == 0
+    assert payload["summary"] == "Deployment is healthy."
+    assert [
+        event["event"]
+        for event in events
+    ] == [
+        "command_started",
+        "command_completed",
+    ]
+
+    started, completed = events
+
+    assert started["level"] == "info"
+    assert started["command"] == "investigate-kubernetes"
+    assert isinstance(started["timestamp"], str)
+
+    assert completed["level"] == "info"
+    assert completed["command"] == "investigate-kubernetes"
+    assert completed["exit_code"] == 0
+    assert completed["success"] is True
+    assert completed["duration_seconds"] >= 0
+
+def test_cli_writes_prometheus_command_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = IncidentReport(
+        summary="Deployment is healthy.",
+        probable_cause="No health problems were detected.",
+        evidence=[],
+        confidence=Confidence.HIGH,
+        recommended_action="Continue monitoring.",
+        approval_required=False,
+        tool_trace=[],
+        errors=[],
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "run_kubernetes_investigation",
+        lambda **kwargs: report,
+    )
+
+    metrics_file = tmp_path / "platform-agent.prom"
+
+    exit_code = cli.main(
+        [
+            "--metrics-file",
+            str(metrics_file),
+            "investigate-kubernetes",
+            "aws-platform-app",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["summary"] == "Deployment is healthy."
+    assert metrics_file.is_file()
+
+    metrics = metrics_file.read_text(encoding="utf-8")
+
+    assert (
+        "platform_agent_commands_total"
+        '{command="investigate-kubernetes",status="success"} '
+        "1.0"
+        in metrics
+    )
+    assert (
+        "platform_agent_command_duration_seconds_count"
+        '{command="investigate-kubernetes"} 1.0'
+        in metrics
+    )
+
+
+def test_cli_writes_prometheus_tool_metrics(
+    project_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    metrics_file = tmp_path / "platform-agent.prom"
+
+    exit_code = cli.main(
+        [
+            "--metrics-file",
+            str(metrics_file),
+            "inspect-module",
+            "modules/vpc",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["errors"] == []
+
+    metrics = metrics_file.read_text(encoding="utf-8")
+
+    assert (
+        "platform_agent_tool_calls_total"
+        '{status="success",tool="list_terraform_files"} '
+        "1.0"
+        in metrics
+    )
+    assert (
+        "platform_agent_tool_calls_total"
+        '{status="success",tool="check_module_files"} '
+        "1.0"
+        in metrics
+    )
+    assert (
+        "platform_agent_tool_duration_seconds_count"
+        '{tool="list_terraform_files"} 1.0'
+        in metrics
+    )
+
+    events = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip()
+    ]
+    completed_tools = [
+        event
+        for event in events
+        if event["event"] == "tool_completed"
+    ]
+
+    assert [
+        event["tool"]
+        for event in completed_tools
+    ] == [
+        "list_terraform_files",
+        "check_module_files",
+    ]
+    assert all(
+        event["success"] is True
+        for event in completed_tools
+    )
+    assert all(
+        event["duration_seconds"] >= 0
+        for event in completed_tools
+    )
